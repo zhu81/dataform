@@ -1,0 +1,1143 @@
+config { type: "table" }
+
+with
+
+    rebilling as (
+        select
+            a.userid,
+            a.transactionid,
+            attemptnumber,
+            rebillingts,
+            last_value(
+                case
+                    when
+                        attemptnumber = 1
+                        and b.transactiontype in (
+                            'FO',
+                            'RO',
+                            'DN',
+                            'RN',
+                            'DN_ADM',
+                            'FO_INST',
+                            'RN_INST',
+                            'DN_INST'
+                        )
+                    then a.transactionid
+                    else null
+                end ignore nulls
+            ) over (partition by a.userid, b.productcycle order by rebillingts)
+            as transactionid_orig,
+            row_number() over (
+                partition by a.userid, a.transactionid, date(rebillingts)
+                order by
+                    rebillingts,
+                    case when date(a.created) = date(b.date) then 0 else 1 end,
+                    b.date desc
+            ) as rank_rebilling,
+            dense_rank() over (
+                partition by
+                    a.userid,
+                    case
+                        when b.transactiontype in ('DN', 'DN_ADM', 'DN_INST')
+                        then cast(a.created as string)
+                        else cast(a.productid as string)
+                    end,
+                    b.productcycle
+                order by rebillingts
+            ) as attempt_rebilling,
+            b.transactiontype as orig_txn_type,
+            b.productcycle as orig_productcycle
+        from ${ref("v_rebilling_attempts_schedules")} a
+        left join
+            ${ref("v_payment_payments")} b
+            on a.transactionid = b.transactionid
+            and b.transactiontype in (
+                'FO',
+                'FO_ADM',
+                'RN_ADM',
+                'RO',
+                'RN',
+                'DN',
+                'DN_ADM',
+                'FO_INST',
+                'RN_INST',
+                'FO_ADM_INST',
+                'RN_ADM_INST',
+                'DN_INST'
+            )
+            and date(b.date) <= date(a.rebillingts)
+        where a.status != 2
+    ),
+    collpot as (
+        select
+            userid,
+            transactionid,
+            createts,
+            last_value(
+                case
+                    when reason in ('CB', 'DN', 'CB_INST', 'DN_INST')
+                    then transactionid
+                    else null
+                end ignore nulls
+            ) over (partition by userid order by createts) as transactionid_orig,
+            coalesce(
+                case
+                    when lag(reason) over w3 in ('INTCO_FEE', 'CHARGEBACK_FEE')
+                    then lag(userbalance) over w1
+                    else null
+                end,
+                userbalance
+            ) as userbalance,
+            coalesce(
+                case
+                    when lag(reason) over w3 in ('INTCO_FEE', 'CHARGEBACK_FEE')
+                    then lag(feebalance) over w1
+                    else null
+                end,
+                feebalance
+            ) as feebalance,
+            coalesce(
+                case
+                    when lag(reason) over w3 in ('INTCO_FEE', 'CHARGEBACK_FEE')
+                    then lag(actualbalance) over w1
+                    else null
+                end,
+                actualbalance
+            ) as actualbalance,
+            max(agency) over w2 as agency,
+            min(toagencydate) over w2 as toagencydate,
+            rank() over (
+                partition by userid, transactionid order by createts
+            ) as rank_coll
+        from ${ref("v_collection_pot")}
+        window
+            w1 as (partition by userid, productid order by createts desc),
+            w2 as (partition by userid, productid),
+            w3 as (partition by userid, productid order by id desc)
+    ),
+    -- changing transaction types for PENDING_RN AND RN_ON_HOLD without any outcomes
+    -- (RN OR DN)
+    pending_no_txn as (
+        select
+            userid,
+            transactionid,
+            min(date(date)) as transactiondate,
+            max(
+                case when transactiontype = 'PENDING_RN' then returncode else '' end
+            ) as prm,
+            max(
+                case when transactiontype = 'RN_ON_HOLD' then returncode else '' end
+            ) as prmh,
+            max(
+                case when transactiontype = 'PENDING_RN' then 1 else 0 end
+            ) as pending_rn,
+            max(
+                case when transactiontype = 'RN_ON_HOLD' then 1 else 0 end
+            ) as rn_on_hold,
+            max(case when transactiontype = 'RN' then 1 else 0 end) as rn,
+            max(case when transactiontype = 'DN' then 1 else 0 end) as dn,
+            max(case when transactiontype = 'CB' then 1 else 0 end) as cb,
+            max(
+                case when transactiontype = 'RN_FINAL_SUCCESS' then 1 else 0 end
+            ) as rn_final_success,
+            max(
+                case when transactiontype = 'RN_FINAL_FAIL' then 1 else 0 end
+            ) as rn_final_fail,
+            max(
+                case
+                    when transactiontype = 'PENDING_RN_INST' then returncode else ''
+                end
+            ) as prm_inst,
+            max(
+                case when transactiontype = 'PENDING_RN_INST' then 1 else 0 end
+            ) as pending_rn_inst,
+            max(case when transactiontype = 'RN_INST' then 1 else 0 end) as rn_inst,
+            max(case when transactiontype = 'DN_INST' then 1 else 0 end) as dn_inst,
+            max(case when transactiontype = 'CB_INST' then 1 else 0 end) as cb_inst,
+            max(
+                case when transactiontype = 'RN_INST_FINAL_SUCCESS' then 1 else 0 end
+            ) as rn_inst_final_success,
+            max(
+                case when transactiontype = 'RN_INST_FINAL_FAIL' then 1 else 0 end
+            ) as rn_inst_final_fail
+        from ${ref("v_payment_payments")}
+        where
+            transactiontype in (
+                'PENDING_RN',
+                'RN',
+                'DN',
+                'CB',
+                'RN_ON_HOLD',
+                'RN_FINAL_FAIL',
+                'RN_FINAL_SUCCESS',
+                'CB_INST',
+                'DN_INST',
+                'PENDING_RN_INST',
+                'RN_INST',
+                'RN_INST_FINAL_FAIL',
+                'RN_INST_FINAL_SUCCESS'
+            )
+        group by userid, transactionid
+        having
+            pending_rn
+            + rn_on_hold
+            + rn_final_fail
+            + rn_final_success
+            + pending_rn_inst
+            + rn_inst_final_fail
+            + rn_inst_final_success
+            > 0
+            and rn + dn + rn_inst + dn_inst = 0
+    ),
+    pending_no_txn_2 as (
+        select
+            *,
+            case
+                when
+                    prm in (
+                        '000.000.000',
+                        'OK',
+                        '000.200.001',
+                        '00000.ALLPAGO.000.000.000',
+                        '00000.WIRECARD.0',
+                        '00000.PAYPAL.000',
+                        '00000.SECURETRADING.0',
+                        'OK_pending'
+                    )
+                then 'RN'
+                when rn_final_success = 1
+                then 'RN'
+                when rn_final_fail = 1
+                then 'DN'
+                when max(rn_final_fail) over (partition by userid, transactiondate) = 1
+                then 'DN'
+                when rn_on_hold > 0
+                then 'RN'
+                when
+                    prm_inst in (
+                        '000.000.000',
+                        'OK',
+                        '000.200.001',
+                        '00000.ALLPAGO.000.000.000',
+                        '00000.WIRECARD.0',
+                        '00000.PAYPAL.000',
+                        '00000.SECURETRADING.0',
+                        'OK_pending'
+                    )
+                then 'RN_INST'
+                when rn_inst_final_success = 1
+                then 'RN_INST'
+                when rn_inst_final_fail = 1
+                then 'DN_INST'
+                when
+                    max(rn_inst_final_fail) over (partition by userid, transactiondate)
+                    = 1
+                then 'DN_INST'
+                when rn_on_hold > 0
+                then 'RN'
+                else 'DN'
+            end as transaction_outcome
+        from pending_no_txn
+    ),
+    paytxn0 as (
+        select
+            a.* except (productid, transactionid, currency),
+            case
+                when
+                    transactiontype in ('RN_ON_HOLD', 'PENDING_RN', 'PENDING_RN_INST')
+                    and b.transactionid is not null
+                then b.transaction_outcome  -- remapping the pending AND ON hold transactions with no following RN/DN
+                when
+                    transactiontype in ('RN_ADM', 'DN_ADM')
+                    and olduserstatus = 1
+                    and paymentprovider = 'HEIDELPAY'
+                then substr(transactiontype, 1, 2)  -- many errors, shouldn't have ADM IN 'PPM' status, particularly HP affected
+                when transactiontype in ('FO_RJ') and olduserstatus in (4, 6)
+                then 'INTCO_RJ'  -- new transaction type WHERE INTCO attempt was NOT successful, separating FROM FO_RJ
+                when transactiontype in ('PENDING_FO') and olduserstatus in (4, 6)
+                then 'PENDING_INTCO'  -- new transaction type WHERE INTCO attempt was made, separating FROM PENDING_FO
+                when
+                    transactiontype in ('FO')
+                    and olduserstatus in (4, 6)
+                    --and psp = 'SANDBOX'  -- psp is deleted from the table
+                then 'INT_CO'  -- added for sandbox intco payments that are written as FO
+                when transactiontype in ('RO')
+                then 'FO'  -- relabel RO to FO AS we have a different definition NOT dependant ON 'pending' status
+                when
+                    transactiontype in ('CB', 'CB_INST')
+                    and max(
+                        case
+                            when
+                                transactiontype
+                                in ('FO_ADM', 'RN_ADM', 'FO_ADM_INST', 'RN_ADM_INST')
+                            then 1
+                            else 0
+                        end
+                    ) over (partition by a.userid, a.transactionid)
+                    = 1
+                then 'CB_ADM'  -- some ADM CB are not labelled correctly as ADM
+                else transactiontype
+            end as transactiontype2,
+            case
+                when
+                    debid is not null
+                    and (
+                        paymentprovider not in ('IOS', 'ANDROID') or length(debid) > 30
+                    )
+                then first_value(productid ignore nulls) over w1
+                else productid
+            end as productid,
+            productid as prdid,  -- adjusting for incorrect productids by debid
+            case
+                when paymentprovider in ('ALLPAGO', 'OPTILE_TBD') and countrycode = 'BR'
+                then
+                    first_value(
+                        concat(a.transactionid, a.productcycle) ignore nulls
+                    ) over w1  -- same transactionid for all cycles, added OPTILE_TBD for BE2 issues
+                when
+                    debid is not null
+                    and (
+                        paymentprovider not in ('IOS', 'ANDROID') or length(debid) > 30
+                    )
+                then first_value(a.transactionid ignore nulls) over w1
+                when paymentprovider = 'SANDBOX'
+                then first_value(a.transactionid ignore nulls) over w1
+                else a.transactionid
+            end as transactionid,
+            a.transactionid as txnid,  -- adjusting for incorrect transactionids by debid
+            case
+                when
+                    transactiontype in (
+                        'PENDING_RN',
+                        'RDT',
+                        'PENDING_FO',
+                        'RN_FINAL_FAIL',
+                        'RN_FINAL_SUCCESS',
+                        'FO_FINAL_FAIL',
+                        'FO_FINAL_SUCCESS',
+                        'PENDING_RN_INST',
+                        'PENDING_FO_INST',
+                        'RN_INST_FINAL_FAIL',
+                        'RN_INST_FINAL_SUCCESS',
+                        'FO_INST_FINAL_FAIL',
+                        'FO_INST_FINAL_SUCCESS'
+                    )
+                then timestamp_add(date, interval 12 hour)
+                else date
+            end as date_adj,
+            min(
+                case
+                    when
+                        transactiontype in (
+                            'PENDING_RN',
+                            'RDT',
+                            'PENDING_FO',
+                            'RN_FINAL_FAIL',
+                            'RN_FINAL_SUCCESS',
+                            'FO_FINAL_FAIL',
+                            'FO_FINAL_SUCCESS',
+                            'PENDING_RN_INST',
+                            'PENDING_FO_INST',
+                            'RN_INST_FINAL_FAIL',
+                            'RN_INST_FINAL_SUCCESS',
+                            'FO_INST_FINAL_FAIL',
+                            'FO_INST_FINAL_SUCCESS'
+                        )
+                    then timestamp_add(date, interval 12 hour)
+                    else date
+                end
+            ) over (partition by a.userid, a.transactionid) as date_adj_first,  -- first (adjusted) occurrence of a transactionid
+            case
+                when currency = 'N/A'
+                then
+                    max(case when currency = 'N/A' then null else currency end) over (
+                        partition by a.userid
+                    )
+                else currency
+            end as currency
+        from ${ref("v_payment_payments")} a
+        left join
+            (
+                select *
+                from pending_no_txn_2
+                where (prm <> '' or prmh <> '') and transactiondate < current_date()
+            ) b
+            on a.userid = b.userid
+            and a.transactionid = b.transactionid
+            and a.transactiontype in ('PENDING_RN', 'RN_ON_HOLD', 'PENDING_RN_INST')
+            and date(a.date) = b.transactiondate
+        where type <> 'Free'
+        window
+            w1 as (
+                partition by a.userid, coalesce(debid, cast(opa_id as string))
+                order by date, id
+            )
+    ),  -- add coalesce to opa_id for sandbox issues where debid does not exist
+    paytxn as (
+        select
+            a.*,
+            last_value(
+                case
+                    when
+                        transactiontype in (
+                            'FO',
+                            'RO',
+                            'PENDING_RN',
+                            'DN',
+                            'RN',
+                            'RN_ON_HOLD',
+                            'FO_RJ',
+                            'DN_ADM',
+                            'RN_ADM',
+                            'FO_INST',
+                            'PENDING_RN_INST',
+                            'DN_INST',
+                            'RN_INST',
+                            'FO_RJ_INST',
+                            'RN_ADM_INST'
+                        )
+                        and olduserstatus not in (4, 6)
+                    then a.transactionid
+                    when transactiontype2 in ('RN', 'RN_INST')
+                    then a.transactionid
+                    else null
+                end ignore nulls
+            ) over (
+                partition by a.userid
+                order by productid, a.transactionid, date_adj, a.id
+            ) as transactionid_firsta,  -- transactionid copied to following transactions based ON list of 'payment' transactiontypes by user
+            coalesce(
+                last_value(
+                    case
+                        when
+                            transactiontype in (
+                                'FO',
+                                'RO',
+                                'PENDING_RN',
+                                'DN',
+                                'RN',
+                                'RN_ON_HOLD',
+                                'DN_ADM',
+                                'RN_ADM',
+                                'FO_INST',
+                                'PENDING_RN_INST',
+                                'DN_INST',
+                                'RN_INST',
+                                'RN_ADM_INST'
+                            )
+                            and olduserstatus not in (4, 6)
+                            and acquirer not in ('WIRECARD', 'SECURIONPAY')
+                        then a.transactionid
+                        when
+                            transactiontype2 in ('RN', 'RN_INST')
+                            and acquirer not in ('WIRECARD', 'SECURIONPAY')
+                        then a.transactionid
+                        else null
+                    end ignore nulls
+                ) over (partition by a.userid, a.debid order by date_adj, a.id),  -- match transactions ON debid WHERE applicable
+                last_value(
+                    case
+                        when
+                            transactiontype in (
+                                'FO',
+                                'RO',
+                                'PENDING_RN',
+                                'DN',
+                                'RN',
+                                'RN_ON_HOLD',
+                                'DN_ADM',
+                                'RN_ADM',
+                                'FO_INST',
+                                'PENDING_RN_INST',
+                                'DN_INST',
+                                'RN_INST',
+                                'RN_ADM_INST'
+                            )
+                            and olduserstatus not in (4, 6)
+                        then a.transactionid  -- otherwise transactionid
+                        when transactiontype2 in ('RN', 'RN_INST')
+                        then a.transactionid
+                        else null
+                    end ignore nulls
+                ) over w2
+            ) as transactionid_first,  -- transactionid copied to following transactions based ON list of 'payment' transactiontypes by user AND debid, WHERE debid is unavailable, user only
+            last_value(
+                case
+                    when
+                        transactiontype in (
+                            'FO',
+                            'RO',
+                            'PENDING_RN',
+                            'DN',
+                            'RN',
+                            'RN_ON_HOLD',
+                            'DN_ADM',
+                            'RN_ADM',
+                            'RDT',
+                            'FO_INST',
+                            'PENDING_RN_INST',
+                            'DN_INST',
+                            'RN_INST',
+                            'RN_ADM_INST'
+                        )
+                    then productid
+                    else null
+                end ignore nulls
+            ) over (partition by a.userid order by date_adj_first, date_adj, a.id)
+            as productid_first,  -- adding all other txn types that are NOT coll
+            row_number() over (
+                partition by a.userid, a.productid order by date_adj
+            ) as rownum,
+            row_number() over (partition by a.id order by b.attempt_rebilling) as rnp,
+            case
+                when transactiontype2 in ('FO', 'DN', 'RO', 'RN')
+                then 1  -- adjusted transaction types include 'missing' PENDING_RN/RN_ON_HOLD transactions
+                when transactiontype in ('FO_RJ', 'FO_FJ_INST')
+                then 3
+                else 2
+            end as cyclecategory,  -- category determines if they can start a cycle OR not!!
+            b.transactionid_orig as admtxnid,  -- original transactionid for adm
+            coalesce(
+                debid, max(debid) over (partition by a.userid, a.transactionid)
+            ) as debid_filled,  -- filling IN debid WHERE it is missing based ON the transactionid
+            max(b.attempt_rebilling) over (
+                partition by a.userid, a.transactionid, a.debid
+            ) as attempt_rebilling,
+            coalesce(
+                case
+                    when a.paymentprovider in ('ALLPAGO', 'NOVALNET')
+                    then
+                        last_value(
+                            case
+                                when
+                                    transactiontype in (
+                                        'FO',
+                                        'RO',
+                                        'PENDING_RN',
+                                        'DN',
+                                        'RN',
+                                        'RN_ON_HOLD',
+                                        'FO_RJ'
+                                    )
+                                    and olduserstatus not in (4, 6)
+                                then a.transactionid
+                                when transactiontype2 = 'RN'
+                                then a.transactionid
+                                else null
+                            end ignore nulls
+                        ) over (
+                            partition by a.userid, a.productid order by date_adj, a.id
+                        )
+                    else last_value(b.transactionid_orig ignore nulls) over w1
+                end,
+                a.transactionid
+            ) as transactionid_orig,
+            case
+                when a.paymentprovider in ('ALLPAGO', 'NOVALNET')
+                then
+                    last_value(
+                        case
+                            when
+                                transactiontype in (
+                                    'FO',
+                                    'RO',
+                                    'PENDING_RN',
+                                    'DN',
+                                    'RN',
+                                    'RN_ON_HOLD',
+                                    'FO_RJ',
+                                    'FO_INST',
+                                    'PENDING_RN_INST',
+                                    'DN_INST',
+                                    'RN_INST',
+                                    'FO_RJ_INST'
+                                )
+                                and olduserstatus not in (4, 6)
+                            then a.transactionid
+                            when transactiontype2 in ('RN', 'RN_INST')
+                            then a.transactionid
+                            else null
+                        end ignore nulls
+                    ) over (partition by a.userid, a.productid order by date_adj, a.id)
+                else
+                    coalesce(
+                        last_value(b.transactionid ignore nulls) over w1,
+                        a.transactionid
+                    )
+            end as transactionid_rb,
+            coalesce(
+                d.transactionid,
+                coalesce(
+                    last_value(b.transactionid_orig ignore nulls) over (
+                        partition by a.userid, a.transactionid order by date_adj, a.id
+                    ),
+                    coalesce(
+                        last_value(
+                            case
+                                when
+                                    transactiontype in (
+                                        'FO',
+                                        'RO',
+                                        'PENDING_RN',
+                                        'DN',
+                                        'RN',
+                                        'RN_ON_HOLD',
+                                        'DN_ADM',
+                                        'RN_ADM',
+                                        'FO_INST',
+                                        'PENDING_RN_INST',
+                                        'DN_INST',
+                                        'RN_INST',
+                                        'RN_ADM_INST'
+                                    )
+                                    and olduserstatus not in (4, 6)
+                                then a.transactionid  -- otherwise transactionid
+                                when transactiontype2 in ('RN', 'RN_INST')
+                                then a.transactionid
+                                else null
+                            end ignore nulls
+                        ) over w2,
+                        a.transactionid
+                    )
+                )
+            ) as transactionid_coll,
+            c.userbalance as coll_userbalance,
+            c.actualbalance as coll_actualbalance,
+            c.feebalance as coll_feebalance,
+            c.agency as coll_agency,
+            c.toagencydate as coll_agency_send_date
+
+        from paytxn0 a
+        left join
+            rebilling b
+            on a.userid = b.userid
+            and date(a.date) = date(b.rebillingts)
+            and a.transactiontype
+            in ('RDT', 'RN_ADM', 'DN_ADM', 'FO_ADM', 'FO_ADM_INST', 'RN_ADM_INST')
+            and b.rank_rebilling = 1
+        left join
+            collpot c
+            on a.userid = c.userid
+            and a.id = safe_cast(c.transactionid as int64)
+            and c.rank_coll = 1
+        left join
+            (
+                select userid, id, transactionid
+                from ${ref("v_payment_payments")}
+            ) d
+            on a.userid = d.userid
+            and safe_cast(c.transactionid_orig as int64) = d.id
+        window
+            w1 as (partition by a.userid, a.transactionid order by date, a.id),
+            w2 as (partition by a.userid order by date_adj, a.id)
+    ),
+    paytxn2 as (
+        select
+            *,
+            row_number() over (
+                partition by userid, productid_first, cyclecategory order by date, id
+            ) as cycleno,  -- basic cycle number assigned by DATE/ productid
+            -- , MAX(CASE WHEN olduserstatus = 8 THEN productcycle ELSE NULL END) OVER
+            -- (PARTITION BY userid, COALESCE(productid_first, productid)) AS
+            -- mig_cyclestart -- adjustment for migrated be2 users
+            -- missing also first cycle due to starting data in 2018 --> do we want
+            -- this data in BQ or not?
+            min(
+                case
+                    when
+                        extract(year from date) <= 2018
+                        and (transactiontype in ('FO', 'RN', 'DN') or olduserstatus = 8)
+                    then productcycle
+                    else null
+                end
+            ) over (partition by userid, coalesce(productid_first, productid))
+            as mig_cyclestart,  -- adjustment for migrated be2 users
+            case
+                when
+                    transactiontype2 in (
+                        'SD',
+                        'CL',
+                        'RN',
+                        'DN',
+                        'RN_FINAL_FAIL',
+                        'RN_FINAL_SUCCESS',
+                        'RN_INST',
+                        'DN_INST',
+                        'RN_INST_FINAL_FAIL',
+                        'RN_INST_FINAL_SUCCESS'
+                    )
+                then transactionid_first
+                when
+                    transactiontype2
+                    in ('PENDING_FO', 'FO_RJ', 'PENDING_FO_INST', 'FO_RJ_INST')
+                    and paymentprovider = 'SANDBOX'
+                then transactionid_firsta  -- issues with increasing ids
+                when
+                    transactiontype2 in (
+                        'PENDING_INTCO',
+                        'INTCO_RJ',
+                        'PENDING_FO',
+                        'FO_RJ',
+                        'PENDING_FO_INST',
+                        'FO_RJ_INST'
+                    )
+                then transactionid_firsta
+                when transactiontype2 in ('RF', 'CB', 'CB_INST')
+                then transactionid_orig
+                when
+                    transactiontype2 in (
+                        'RN_ADM',
+                        'CB_ADM',
+                        'FO_ADM',
+                        'RDT',
+                        'FO_ADM_FINAL_SUCCESS',
+                        'FO_ADM_FINAL_FAIL',
+                        'DN_ADM',
+                        'RN_ADM_INST',
+                        'CB_ADM_INST',
+                        'FO_ADM_INST',
+                        'FO_ADM_INST_FINAL_SUCCESS',
+                        'FO_ADM_INST_FINAL_FAIL'
+                    )
+                then transactionid_orig  -- AND attempt_rebilling IS NOT NULL
+                else transactionid_coll
+            end as cycletxnid
+        from paytxn
+        where rnp = 1
+    ),  -- assigning a transactionid to each cycle based ON content of cycle
+    paytxn3 as (
+        select
+            *,
+            last_value(
+                case when cyclecategory = 1 then cycleno else null end ignore nulls
+            ) over (
+                partition by userid, productid_first
+                order by cycletxnid, date_adj_first, date_adj, id
+            ) as cycle_fin,
+            case
+                when
+                    transactiontype2
+                    in ('PENDING_FO', 'FO_RJ', 'PENDING_FO_INST', 'FO_RJ_INST')
+                then productid
+                else coalesce(productid_first, productid)
+            end as productid_fin,  -- pendingfo NOT hANDled above, adjusted for coll
+            max(
+                case
+                    when
+                        transactiontype2 in (
+                            'RN',
+                            'FO',
+                            'FO_RJ',
+                            'DN',
+                            'RO',
+                            'RN_INST',
+                            'FO_INST',
+                            'FO_RJ_INST',
+                            'DN_INST'
+                        )
+                    then transactiontype2
+                    else null
+                end
+            ) over (partition by userid, cycletxnid) as fintxntype,  -- type of transaction for each cycle
+            cycletxnid as cycle_transactionid_fin,
+            coalesce(
+                last_value(
+                    case
+                        when
+                            transactiontype2 in (
+                                'FO',
+                                'RO',
+                                'PENDING_RN',
+                                'DN',
+                                'RN',
+                                'RN_ON_HOLD',
+                                'INT_CO',
+                                'RN_ADM',
+                                'DN_ADM',
+                                'SD',
+                                'FO_INST',
+                                'PENDING_RN_INST',
+                                'DN_INST',
+                                'RN_INST',
+                                'RN_ADM_INST'
+                            )
+                        then channel_id
+                        else null
+                    end ignore nulls
+                ) over w1,
+                channel_id
+            ) as cid_fin,
+            coalesce(
+                last_value(
+                    case
+                        when
+                            transactiontype2 in (
+                                'FO',
+                                'RO',
+                                'PENDING_RN',
+                                'DN',
+                                'RN',
+                                'RN_ON_HOLD',
+                                'INT_CO',
+                                'RN_ADM',
+                                'DN_ADM',
+                                'SD',
+                                'FO_INST',
+                                'PENDING_RN_INST',
+                                'DN_INST',
+                                'RN_INST',
+                                'RN_ADM_INST'
+                            )
+                        then paymentprovider
+                        else null
+                    end ignore nulls
+                ) over w1,
+                paymentprovider
+            ) as paymentprovider_fin,
+            coalesce(
+                last_value(
+                    case
+                        when
+                            transactiontype2 in (
+                                'FO',
+                                'RO',
+                                'PENDING_RN',
+                                'DN',
+                                'RN',
+                                'RN_ON_HOLD',
+                                'INT_CO',
+                                'RN_ADM',
+                                'DN_ADM',
+                                'SD',
+                                'FO_INST',
+                                'PENDING_RN_INST',
+                                'DN_INST',
+                                'RN_INST',
+                                'RN_ADM_INST'
+                            )
+                        then acquirer
+                        else null
+                    end ignore nulls
+                ) over w1,
+                acquirer
+            ) as acquirer_fin
+        -- ensuring the psp/acquirer values are the same across a single debid
+        from paytxn2
+        window
+            w1 as (partition by userid, productid, debid_filled order by date_adj, id)
+    )
+
+select
+    id,
+    type,
+    userid,
+    countrycode,
+    customerid,
+    date,
+    paymentprovider,
+    price,
+    returncode,
+    statuscode,
+    returnmessage,
+    jobid,
+    transactiontype,
+    productcycle,
+    acquirer,
+    olduserstatus,
+    newuserstatus,
+    clientid,
+    redebittries,
+    brand,
+    debid,
+    -- initialfee,
+    -- , opareference
+    -- , foadm
+    -- arm,
+    -- installmentnum,
+    pspaccess,
+    -- psp,
+    paymentcardiin,
+    channel_id as cid,
+    productbrand,
+    opa_id,
+    accountholder,
+    userip,
+    accountiban,
+    bankbic,
+    expiryyear,
+    expirymonth,
+    mandateid,
+    notificationid,
+    transactioneventid,
+    -- migrationreferenceid,
+    paymentcardlastdigits,
+    chainid,
+    provider_3ds_ref_id,
+    three_ds_transaction,
+    -- source_ts,
+    -- rn,
+    productid,
+    prdid,
+    transactionid,
+    txnid,
+    date_adj,
+    date_adj_first,
+    currency,
+    transactionid_firsta,
+    transactionid_first,
+    productid_first,
+    rownum,
+    cyclecategory,
+    admtxnid,
+    debid_filled,
+    attempt_rebilling,
+    transactionid_orig,
+    transactionid_rb,
+    transactionid_coll,
+    coll_userbalance,
+    coll_actualbalance,
+    coll_feebalance,
+    coll_agency,
+    coll_agency_send_date,
+    cycleno,
+    mig_cyclestart,
+    cycletxnid,
+    productid_fin,
+    fintxntype,
+    cycle_transactionid_fin,
+    -- , cid_fin,	paymentprovider_fin,	acquirer_fin,	transactiontype2,	cycle_fin
+    -- , subscriptionno_fin, userattemptno_fin, attemptno_fin, attempt_final_txn,
+    -- cycle_adm, cycle_coll
+    coalesce(
+        case
+            when transactiontype2 in ('CL')
+            then
+                last_value(
+                    case
+                        when
+                            transactiontype2 in (
+                                'FO',
+                                'RO',
+                                'PENDING_RN',
+                                'DN',
+                                'RN',
+                                'RN_ON_HOLD',
+                                'INT_CO',
+                                'RN_ADM',
+                                'DN_ADM',
+                                'SD',
+                                'FO_RJ',
+                                'FO_INST',
+                                'PENDING_RN_INST',
+                                'DN_INST',
+                                'RN_INST',
+                                'RN_ADM_INST',
+                                'FO_RJ_INST'
+                            )
+                        then channel_id
+                        else null
+                    end ignore nulls
+                ) over (partition by userid, productid order by date_adj, id)
+            else cid_fin
+        end,
+        channel_id
+    ) as cid_fin,
+    coalesce(
+        case
+            when transactiontype2 in ('CL')
+            then
+                last_value(
+                    case
+                        when
+                            transactiontype2 in (
+                                'FO',
+                                'RO',
+                                'PENDING_RN',
+                                'DN',
+                                'RN',
+                                'RN_ON_HOLD',
+                                'INT_CO',
+                                'RN_ADM',
+                                'DN_ADM',
+                                'SD',
+                                'FO_RJ',
+                                'FO_INST',
+                                'PENDING_RN_INST',
+                                'DN_INST',
+                                'RN_INST',
+                                'RN_ADM_INST',
+                                'FO_RJ_INST'
+                            )
+                        then paymentprovider
+                        else null
+                    end ignore nulls
+                ) over (partition by userid, productid order by date_adj, id)
+            else paymentprovider_fin
+        end,
+        paymentprovider
+    ) as paymentprovider_fin,
+    coalesce(
+        case
+            when transactiontype2 in ('CL')
+            then
+                last_value(
+                    case
+                        when
+                            transactiontype2 in (
+                                'FO',
+                                'RO',
+                                'PENDING_RN',
+                                'DN',
+                                'RN',
+                                'RN_ON_HOLD',
+                                'INT_CO',
+                                'RN_ADM',
+                                'DN_ADM',
+                                'SD',
+                                'FO_RJ',
+                                'FO_INST',
+                                'PENDING_RN_INST',
+                                'DN_INST',
+                                'RN_INST',
+                                'RN_ADM_INST',
+                                'FO_RJ_INST'
+                            )
+                        then acquirer
+                        else null
+                    end ignore nulls
+                ) over (partition by userid, productid order by date_adj, id)
+            else acquirer_fin
+        end,
+        acquirer
+    ) as acquirer_fin,
+    -- correcting the psp/acquirer values for the CL events (as they are usually taken
+    -- FROM the row above)
+    case
+        when transactiontype = 'FO_ADM' and cycle_fin > 1
+        then 'RN_ADM'
+        else transactiontype2
+    end as transactiontype2,  -- final adjustment IN the CASE of strange FO_ADM values
+    case
+        when fintxntype in ('FO_RJ', 'FO_RJ_INST')
+        then 0
+        when
+            fintxntype is null
+            and transactiontype2
+            in ('PENDING_FO', 'PENDING_RN', 'PDNDING_FO_INST', 'PENDING_RN_INST')
+        then 0
+        when
+            fintxntype in ('DN', 'RN', 'DN_INST', 'RN_INST')
+            and transactiontype2 in ('PENDING_FO', 'PENDING_FO_INST')
+        then 0
+        else cycle_fin
+    end
+    + coalesce(mig_cyclestart - 1, 0) as cycle_fin,  -- setting pre-FO cycles to 0 AND adding ON the migrated user adjustment
+    case
+        when cycle_fin is null
+        then 0
+        else
+            dense_rank() over (
+                partition by userid, case when cycle_fin is null then 0 else 1 end
+                order by case when cycle_fin is null then null else productid_fin end
+            )
+    end subscriptionno_fin,
+    dense_rank() over (partition by userid order by productid_fin) userattemptno_fin,
+    dense_rank() over (
+        partition by
+            userid,
+            productid,
+            case
+                when
+                    transactiontype2 in (
+                        'FO',
+                        'FO_RJ',
+                        'PENDING_FO',
+                        'RO',
+                        'FO_FINAL_SUCCESS',
+                        'FO_FINAL_FAIL'
+                    )
+                then 1
+                when transactiontype2 in ('INTCO_RJ', 'PENDING_INTCO', 'INT_CO')
+                then 2
+                else 0
+            end
+        order by transactionid, productcycle
+    ) attemptno_fin,
+    case
+        when
+            rank() over (
+                partition by
+                    userid,
+                    case
+                        when transactiontype2 in ('INTCO_RJ', 'PENDING_INTCO', 'INT_CO')
+                        then productid
+                        else productid_fin
+                    end,
+                    case
+                        when
+                            transactiontype2 in (
+                                'FO',
+                                'FO_RJ',
+                                'PENDING_FO',
+                                'RO',
+                                'FO_FINAL_SUCCESS',
+                                'FO_FINAL_FAIL'
+                            )
+                        then 1
+                        when transactiontype2 in ('INTCO_RJ', 'PENDING_INTCO', 'INT_CO')
+                        then 2
+                        else 0
+                    end
+                order by date desc, id desc
+            )
+            = 1
+            and transactiontype2 in (
+                'FO',
+                'FO_RJ',
+                'PENDING_FO',
+                'RO',
+                'INTCO_RJ',
+                'PENDING_INTCO',
+                'INT_CO',
+                'FO_FINAL_SUCCESS',
+                'FO_FINAL_FAIL'
+            )
+        then 1
+        else 0
+    end as attempt_final_txn,
+    coalesce(
+        case
+            when transactiontype2 in ('CL', 'SD', 'RN', 'DN', 'FO')
+            then 0
+            when
+                transactiontype2 in (
+                    'CB',
+                    'PENDING_FO',
+                    'PENDING_RN',
+                    'FO_FINAL_SUCCESS',
+                    'RN_FINAL_SUCCESS',
+                    'CB_INST',
+                    'PENDING_FO_INST',
+                    'PENDING_RN_INST',
+                    'FO_INST_FINAL_SUCCESS',
+                    'RN_INST_FINAL_SUCCESS'
+                )
+                and attempt_rebilling is null
+            then 0
+            else
+                max(coalesce(attempt_rebilling, redebittries)) over (
+                    partition by userid, transactionid
+                )
+        end,
+        0
+    ) as cycle_adm,  -- redebittries
+    case
+        when transactiontype2 in ('CL', 'SD')
+        then 0
+        else
+            max(
+                case when transactiontype in ('INT_CO', 'EXT_CO') then 1 else 0 end
+            ) over (partition by userid, transactionid)
+    end as cycle_coll
+
+from paytxn3

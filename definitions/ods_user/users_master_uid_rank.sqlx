@@ -1,0 +1,10 @@
+config { type:"table" }
+
+
+select
+    id user_id,
+    masteruid master_uid,
+    dense_rank() over (partition by masteruid order by registered asc) uid_rank,
+    email encrypted_email,
+    dense_rank() over (partition by email order by registered asc) encrypted_email_rank
+from ${ ref("userProfile_latest_v") }

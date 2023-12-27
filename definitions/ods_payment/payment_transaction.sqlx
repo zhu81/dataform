@@ -1,0 +1,662 @@
+config { type: "table" }
+
+with
+    rf as (
+        select
+            user_id,
+            deb_id,
+            date(a.date) as rfdate,
+            sum(amount) as rf_amount,
+            a.currency as rf_currency,
+            notify_user as rf_notify_user,
+            partial_refund as rf_partial,
+            reason as rf_reason,
+            sub_reason as rf_subreason,
+            b.transactionid,
+        from ${ref("v_refund_event")} a
+        left join
+            ${ ref("stag_payment_transaction") } b
+            on a.user_id = b.userid
+            and a.deb_id = b.debid
+            and b.transactiontype in (
+                'FO',
+                'RN',
+                'RN_ADM',
+                'FO_ADM',
+                'RO',
+                'RF',
+                'FO_INST',
+                'RN_INST',
+                'RN_ADM_INST',
+                'FO_ADM_INST'
+            )
+        -- where a.user_id=229952907
+        group by
+            user_id,
+            deb_id,
+            rf_currency,
+            notify_user,
+            partial_refund,
+            reason,
+            sub_reason,
+            rfdate,
+            transactionid
+    ),
+    cluauth as (
+        select
+            cc.user_id,
+            cc.date as c3ds_ts,
+            cc.internal_reference_id,
+            cc.three_ds_version as c3ds_version,
+            cc.reference_id as c3ds_reference_id,
+            cc.error_desc as c3ds_error_desc,
+            cc.eci_flag as c3ds_eci_flag,
+            cc.enrolled as c3ds_enrolled,
+            cc.pay_auth_response_status as c3ds_pay_auth_response_status,
+            cc.challenge_required as c3ds_challenge_required,
+            cc.transaction_status_reason as c3ds_transaction_status_reason,
+            cc.acquirer as c3ds_acquirer,
+            cc.contract_config_id as c3ds_contract_config_id,
+            dc.pares_status as cr3ds_pares_status,
+            dc.date as cr3ds_ts,
+            dc.action_code as cr3ds_action_code,
+            dc.error_desc as cr3ds_error_desc,
+            dc.validated as cr3ds_validated,
+            row_number() over (
+                partition by cc.user_id, cc.date, cc.reference_id order by dc.date
+            ) as rownum
+        from ${ ref("v_cardinal_lookup") } cc
+        left outer join
+            ${ ref("v_cardinal_token_authorization") } dc
+            on cc.user_id = dc.user_id
+            and cc.reference_id = dc.reference_id
+            and dc.date >= cc.date
+    ),
+    sch as (
+        select *
+        from `cdate-prod.src_payment.payment_schedules_date_user`('2010-01-01', 0)
+    ),
+    clean_txn as (
+        select
+            a.id as payment_id,
+            a.userid as user_id,
+            d.branch,
+            productid_fin as subscription_id,
+            concat(
+                safe_cast(cycle_fin as string),
+                '_',
+                coalesce(
+                    first_value(cycle_transactionid_fin) over (
+                        partition by a.userid, productid_fin, cycle_fin
+                        order by a.date, a.id
+                    ),
+                    a.transactionid
+                )
+            ) as cycle_id,
+            coalesce(
+                first_value(cycle_transactionid_fin) over (
+                    partition by a.userid, productid_fin, cycle_fin
+                    order by a.date, a.id
+                ),
+                a.transactionid
+            ) as cycle_transaction_id,  -- cycle_transactionid_fin
+            subscriptionno_fin as subscription_no,
+            max(subscriptionno_fin) over (partition by a.userid) as subscription_ct,
+            case
+                when
+                    transactiontype2 in (
+                        'PENDING_FO',
+                        'FO',
+                        'RO',
+                        'PENDING_INTCO',
+                        'INT_CO',
+                        'FO_RJ',
+                        'FO_FINAL_FAIL',
+                        'FO_FINAL_SUCCESS',
+                        'INTCO_RJ'
+                    )
+                then userattemptno_fin
+                else 0
+            end as fot_no,
+            case
+                when
+                    transactiontype2 in (
+                        'PENDING_FO',
+                        'FO',
+                        'RO',
+                        'PENDING_INTCO',
+                        'INT_CO',
+                        'FO_RJ',
+                        'FO_FINAL_FAIL',
+                        'FO_FINAL_SUCCESS',
+                        'INTCO_RJ'
+                    )
+                then attemptno_fin
+                else 0
+            end as fot_try_no,
+            case
+                when
+                    transactiontype2 in (
+                        'PENDING_FO',
+                        'FO',
+                        'RO',
+                        'PENDING_INTCO',
+                        'INT_CO',
+                        'FO_RJ',
+                        'FO_FINAL_FAIL',
+                        'FO_FINAL_SUCCESS',
+                        'INTCO_RJ'
+                    )
+                then attempt_final_txn
+                else 0
+            end as fot_final_transaction,
+            a.date as transaction_ts,
+            case
+                when a.paymentprovider = 'SANDBOX'
+                then a.cycle_transactionid_fin
+                else a.transactionid
+            end as transaction_id,
+            cycle_fin as cycle_no,
+            safe_cast(cycle_adm as int) as cycle_rdt_no,
+            cycle_coll as cycle_coll_no,
+            transactiontype2 as transaction_type,
+            coalesce(br.country_code, a.countrycode) as country_code,
+            br.country_label,
+            coalesce(br.brand_bq, productbrand) as brand_code,
+            br.brand_group,
+            br.country_group,
+            -- us_old.user_status_name as member_status_old,
+            -- us_new.user_status_name as member_status_new,
+            case
+                when a.type in ('SEPA', 'DirectDebit')
+                then 'SEPA'
+                when a.type in ('CreditCard', 'DebitCard')
+                then 'CC'
+                when a.type in ('OnlineTransfer')
+                then 'IDEAL'
+                when a.type in ('None', 'ClickAndBuy')
+                then 'INVOICE'
+                else upper(a.type)
+            end as payment_type,
+            b.psp,
+            b.acq as acquirer,
+            b.psp_acquirer,
+            b.psp_short,
+            b.optile_access,
+            a.paymentcardiin as card_bin,
+            coalesce(
+                case when c.card_brand = 'MAESTRO' then 'MASTER' else c.card_scheme end,
+                case
+                    when a.type in ('CreditCard', 'DebitCard') then a.brand else null
+                end
+            ) as card_scheme,
+            coalesce(
+                c.card_brand,
+                case
+                    when a.type in ('CreditCard', 'DebitCard') then a.brand else null
+                end
+            ) as card_brand,
+            coalesce(
+                c.card_type,
+                case
+                    when a.type in ('SEPA', 'DirectDebit')
+                    then 'SEPA'
+                    when a.type in ('CreditCard', 'DebitCard')
+                    then 'CC'
+                    when a.type in ('OnlineTransfer')
+                    then 'IDEAL'
+                    when a.type in ('None', 'ClickAndBuy')
+                    then 'INVOICE'
+                    else upper(a.type)
+                end
+            ) as card_type,
+            c.card_subtype,  -- subtype AS
+            c.card_prepaid,  -- isPrepaid AS
+            c.card_country,  -- country AS
+            c.card_bank,  -- bankname AS
+            c.card_blocked,  -- isblocked AS
+            a.accountholder as card_accountholder,
+            a.expiryyear as card_expiryyear,
+            a.expirymonth as card_expirymonth,
+            a.paymentcardlastdigits as card_last4,
+            a.accountiban as card_iban,
+            a.bankbic as card_bankbic,
+            a.three_ds_transaction as is_3ds,
+            a.coll_userbalance,
+            a.coll_actualbalance,
+            a.coll_feebalance,
+            a.coll_agency,
+            a.coll_agency_send_date,
+            coalesce(e.cleanedreturncode, a.returncode) as rc_returncode,
+            e.reason as rc_reason,
+            e.subreason as rc_subreason,
+            e.rank as rc_rank,
+            e.isadmreturncode as rc_rdt_active,
+            coalesce(e.cleanedreturnmessage, a.returnmessage) as rc_returnmessage,
+            e.isfailoverreturncode as rc_failover_active,
+            d.reg_ts,
+            d.gender,
+            d.scammer_status_latest,
+            d.reg_ip_country,
+            d.member_status_latest,
+            d.purchase_probability_score,
+            d.scammer_score,
+            d.test_user,
+            d.deletion_request_ts,
+            d.reg_os,
+            d.reg_device,
+            j.score as fraud_score,
+            coalesce(dd.channel_group, tr.channel_group) as channel_group,
+            coalesce(dd.partner, tr.partner) as partner,
+            dd.level_1,
+            dd.level_1_name,
+            coalesce(d.pay_device, d.reg_device) as pay_device,
+            coalesce(d.pay_os, d.reg_os) as pay_os,
+            d.birthday,
+            d.email_domain,
+            d.deactivation_ts as deactivation_ts,
+            rf.rf_reason,
+            rf.rf_subreason,
+            rf.rf_notify_user,
+            rf.rf_detail,
+            coalesce(h.vat_rate, 0) / 100 as vat_rate,
+            coalesce(
+                i.rate, case when a.currency in ('EUR', 'N/A') then 1 else 0 end
+            ) as exchange_rate,
+            a.price + ifnull(a.initialfee, 0) as price,  -- add initialfee for old SEPA users
+            case
+                when a.currency <> 'N/A'
+                then a.currency
+                when g.currency <> 'N/A'
+                then g.currency
+                else br.currency_code
+            end as currency,
+            safe_divide(
+                a.price + ifnull(a.initialfee, 0),
+                coalesce(
+                    i.rate, case when a.currency in ('EUR', 'N/A') then 1 else 0 end
+                )
+            ) as price_eur,
+            safe_divide(
+                safe_divide(
+                    a.price + ifnull(a.initialfee, 0),
+                    coalesce(
+                        i.rate, case when a.currency in ('EUR', 'N/A') then 1 else 0 end
+                    )
+                ),
+                (1 + coalesce(h.vat_rate, 0) / 100)
+            ) as price_eur_net,
+            row_number() over (partition by a.id) rnb,
+            transactiontype as src_transaction_type,
+            a.productcycle as src_cycle_no,
+            prdid as src_subscription_id,
+            a.paymentprovider as src_psp,
+            a.cid as src_contract_id,
+            a.acquirer as src_acquirer,
+            a.txnid as src_transaction_id,
+            a.debid as src_deb_id,
+            a.chainid as src_chain_id,
+            a.provider_3ds_ref_id as src_provider_3ds_ref_id,
+            a.customerid as src_customer_id,
+            returncode as src_returncode,
+            returnmessage as src_returnmessage,
+            statuscode as src_statuscode,
+            a.clientid as src_client_id,
+            a.productid as product_id,
+            g.initialduration as fo_duration,
+            g.initialdurationunit as fo_duration_unit,
+            g.duration as rn_duration,
+            g.durationunit as rn_duration_unit,
+            g.price + ifnull(a.initialfee, 0) as fo_price,
+            g.prolongationprice + ifnull(a.initialfee, 0) as rn_price,
+            case
+                when g.currency <> 'N/A' then g.currency else br.currency_code
+            end as order_currency,
+            coalesce(
+                g.lastpayed, min(a.date) over (partition by a.userid, a.productid_fin)
+            ) as fot_ts,
+            case
+                when cycle_fin <> 0
+                then
+                    coalesce(
+                        g.lastpayed,
+                        min(a.date) over (partition by a.userid, a.productid_fin)
+                    )
+                else null
+            end as order_ts,
+            g.cancelled,
+            g.cancellationcode as cancellation_code,
+            g.lastprolonged as last_prolonged_ts,
+            g.expiration as expiration_ts,
+            g.updated as update_ts,
+            g.producttype as product_type,
+            cl.cancellation_type,
+            cl.cancellation_source,
+            cl.cancellation_reason_group,
+            cl.cancellation_reason_subgroup,
+            cl.cancellation_reason_detail,
+            cl.reason as cancellation_reason,
+            cl.reason,
+            cl.subreason,
+            fup.fup_group,
+            fup.fup,
+            coalesce(
+                case when cycle_fin <= 1 then g.initialduration else g.duration end, 0
+            ) as cycle_duration,
+            coalesce(
+                case
+                    when cycle_fin <= 1 then g.initialdurationunit else g.durationunit
+                end,
+                'MONTH'
+            ) as cycle_duration_unit,
+            min(a.date) over (
+                partition by a.userid, a.productid_fin, a.cycle_fin
+            ) as cycle_start_ts,
+            o.opa_oid,
+            o.opa_id,
+            o.opa_tag as src_opa_tag,
+            opa.opa_brand,
+            opa.src_opa_tag as opa_tag,
+            opa.opa_type,
+            opa.opa_subtype,
+            -- ,opa.crm_type AS opa_crm
+            opa.message_name_merged as opa_crm_message,
+            o.fupindex as fup_index,
+            o.fp_noticeperiod_unit as fo_notice_period_unit,
+            o.fp_noticeperiod_duration as fo_notice_period_duration,
+            o.rp_noticeperiod_unit as rn_notice_period_unit,
+            o.rp_noticeperiod_duration as rn_notice_period_duration,
+            cc.c3ds_ts,
+            cc.c3ds_version,
+            cc.c3ds_reference_id,
+            cc.c3ds_error_desc,
+            cc.c3ds_eci_flag,
+            cc.c3ds_enrolled,
+            cc.c3ds_pay_auth_response_status,
+            cc.c3ds_challenge_required,
+            cc.c3ds_transaction_status_reason,
+            cc.c3ds_acquirer,
+            cc.c3ds_contract_config_id,
+            cc.cr3ds_pares_status,
+            cc.cr3ds_ts,
+            cc.cr3ds_action_code,
+            cc.cr3ds_error_desc,
+            cc.cr3ds_validated,
+            ee.rebillingdate as sch_rebillingdate,
+            ee.status as sch_status,
+            ee.timestamp as sch_status_ts,
+            ee.productcycle as sch_productcycle,
+            br.brand as brand
+
+        from ${ ref("stag_payment_transaction") } a
+        /*      left join
+            {{ ref("user_status") }} us_old on a.olduserstatus = us_old.user_status
+        left join
+            {{ ref("user_status") }} us_new on a.newuserstatus = us_new.user_status  */
+        left join
+            {{ ref("dim_psp_acq") }} b
+            on coalesce(a.cid_fin, a.paymentprovider_fin) = b.src_cid
+            and a.paymentprovider_fin = b.src_paymentprovider
+            and coalesce(a.acquirer_fin, a.paymentprovider_fin) = b.src_acquirer
+        left join {{ ref("dim_bin") }} c on a.paymentcardiin = c.bin_id
+        -- ON a.paymentcardiin = SAFE_CAST(c.bin AS INT64)
+        left join {{ ref("users") }} d on a.userid = d.user_id
+        left join {{ ref("upcase_tc") }} tr on d.upcase_tc = tr.upcase_tc
+        left join {{ ref("mkt_levels") }} dd on a.userid = dd.user_id
+        left join {{ ref("branch") }} br on d.branch = br.branch
+        left join
+            {{ ref("dim_returncodes") }} e  -- `ods_payment.ods_returncodes` e
+            on concat(
+                coalesce(a.returncode, 'Unknown'),
+                coalesce(a.returnmessage, 'Unknown'),
+                case
+                    when
+                        a.transactiontype in (
+                            'CB',
+                            'CB_ADM',
+                            'FO_ADM_FINAL_FAIL',
+                            'FO_FINAL_FAIL',
+                            'RN_ADM_FINAL_FAIL',
+                            'RN_FINAL_FAIL',
+                            'CB_INST',
+                            'CB_ADM_INST',
+                            'FO_ADM_INST_FINAL_FAIL',
+                            'FO_INST_FINAL_FAIL',
+                            'RN_ADM_INST_FINAL_FAIL',
+                            'RN_INST_FINAL_FAIL'
+                        )
+                    then 'CB'
+                    else 'DN'
+                end,
+                coalesce(
+                    case when a.psp = '0' then safe_cast(null as string) else a.psp end,
+                    a.paymentprovider
+                )
+            )
+            = e.uniquekey
+            and a.transactiontype in (
+                'CB',
+                'CB_ADM',
+                'DN',
+                'DN_ADM',
+                'FO_RJ',
+                'INTCO_RJ',
+                'FO_ADM_FINAL_FAIL',
+                'FO_FINAL_FAIL',
+                'RN_ADM_FINAL_FAIL',
+                'RN_FINAL_FAIL',
+                'CB_INST',
+                'CB_ADM_INST',
+                'DN_INST',
+                'FO_RJ_INST',
+                'FO_ADM_INST_FINAL_FAIL',
+                'FO_INST_FINAL_FAIL',
+                'RN_ADM_INST_FINAL_FAIL',
+                'RN_INST_FINAL_FAIL'
+            )
+
+        left join
+            {{ ref("stag_payment_refund") }} rf
+            on a.userid = rf.user_id
+            and a.id = rf.id
+
+        left join
+            {{ source("src_payment", "v_payment_user_products") }} g
+            on a.productid = g.id
+        left join
+            {{ ref("dim_cancellation_code") }} cl
+            on g.cancellationcode = cl.cancellation_code
+        left join
+            {{ ref("dim_fup") }} fup
+            on g.initialduration = fup.initialduration
+            and g.initialdurationunit = fup.initialdurationunit
+            and g.duration = fup.duration
+            and g.durationunit = fup.durationunit
+        left join
+            {{ ref("country_vat_lookup") }} h
+            on h.country_code = a.countrycode
+            and h.valid_from <= date(a.date)
+            and h.valid_to > date(a.date)
+
+        left outer join
+            {{ ref("exchange_rates") }} i
+            on date(a.date) = i.day
+            and i.currency = a.currency
+        left join
+            (
+                select
+                    user_id,
+                    score,
+                    model,
+                    event_ts,
+                    coalesce(
+                        lag(event_ts) over (
+                            partition by user_id order by event_ts desc
+                        ),
+                        timestamp('2099-01-01')
+                    ) as end_event_ts
+                from `cdate-prod.mon_machine_learning.ML_monitoring`
+                where model = 'registry:5000/bi_fraud_classifier'
+            ) j
+            on a.userid = j.user_id
+            and a.date >= j.event_ts
+            and a.date < j.end_event_ts
+        left join
+            {{ source("src_payment", "opas") }} o
+            on a.userid = o.userid
+            and a.opa_id = o.id
+        left join {{ ref("opa") }} opa on o.opa_id = safe_cast(opa.opa_id as int64)
+        left join
+            cluauth cc
+            on a.userid = cc.user_id
+            and a.provider_3ds_ref_id = cc.internal_reference_id
+            and cc.rownum = 1
+        left join
+            sch ee
+            on a.userid = ee.userid
+            and a.productid = ee.productid
+            and ee.active = true
+    )
+
+select
+    * except (reason, subreason, brand),  -- easier to add column at the end to the holding table
+    case
+        when payment_type in ('ANDROID', 'IOS')
+        then 'APPSTORE'
+        when payment_type in ('CC')
+        then 'CC&DC'
+        when payment_type in ('IDEAL', 'SEPA')
+        then 'DD&SEPA&OT'
+        else payment_type
+    end as payment_type_group,
+    case
+        when cycle_no > 2 then 'RN2+' when cycle_no = 2 then 'RN1' else 'FO'
+    end as meta_cycle,
+    round(
+        case
+            when
+                transaction_type in (
+                    'FO',
+                    'RN',
+                    'RN_ADM',
+                    'EXT_CO',
+                    'FO_ADM',
+                    'INT_CO',
+                    'RO',
+                    'FO_INST',
+                    'RN_INST',
+                    'RN_ADM_INST',
+                    'FO_ADM_INST'
+                )
+            then abs(price_eur_net)
+            when
+                transaction_type in (
+                    'CB',
+                    'CB_ADM',
+                    'RF',
+                    'CB_INST',
+                    'CB_ADM_INST',
+                    'FO_FINAL_FAIL',
+                    'FO_ADM_FINAL_FAIL',
+                    'FO_INST_FINAL_FAIL',
+                    'RN_FINAL_FAIL',
+                    'RN_ADM_FINAL_FAIL',
+                    'RN_INST_FINAL_FAIL'
+                )
+            then - abs(price_eur_net)
+            else 0
+        end,
+        2
+    ) as transaction_sales_eur,
+    round(
+        case
+            when
+                transaction_type in (
+                    'FO',
+                    'RN',
+                    'RN_ADM',
+                    'EXT_CO',
+                    'FO_ADM',
+                    'INT_CO',
+                    'RO',
+                    'FO_INST',
+                    'RN_INST',
+                    'FN_ADM_INST',
+                    'FO_ADM_INST'
+                )
+            then abs(price)
+            when
+                transaction_type in (
+                    'CB',
+                    'CB_ADM',
+                    'RF',
+                    'CB_INST',
+                    'CB_ADM_INST',
+                    'FO_FINAL_FAIL',
+                    'FO_ADM_FINAL_FAIL',
+                    'FO_INST_FINAL_FAIL',
+                    'RN_FINAL_FAIL',
+                    'RN_ADM_FINAL_FAIL',
+                    'RN_INST_FINAL_FAIL'
+                )
+            then - abs(price)
+            else 0
+        end,
+        2
+    ) as transaction_sales,
+    concat(
+        fup,
+        case
+            when opa_type = 'CRM'
+            then 'p'
+            when opa_type = 'Trial' and fo_duration in (1, 14, 15)
+            then 't'
+            when opa_type in ('IOS', 'Android')
+            then 'a'
+            when fo_price * 2.1 < rn_price and fup = '1m'
+            then 't'
+            else ''
+        end
+    ) as fup_detail,
+    case
+        when opa_type = 'CRM'
+        then 'Promo'
+        when opa_type = 'Trial' and fo_duration in (1, 14, 15)
+        then 'Trial'
+        when opa_type in ('IOS', 'Android')
+        then 'Appstore'
+        when fo_price * 2.1 < rn_price and fup = '1m'
+        then 'Trial'
+        when payment_type = 'INVOICE'
+        then 'Invoice'
+        else 'Standard'
+    end as fup_type,
+    case
+        when cycle_duration_unit = 'DAY'
+        then timestamp_add(cycle_start_ts, interval cycle_duration day)
+        when cycle_duration_unit = 'WEEK'
+        then timestamp_add(cycle_start_ts, interval cycle_duration * 7 day)
+        when cycle_duration_unit = 'MONTH'
+        then timestamp_add(cycle_start_ts, interval cycle_duration * 30 day)
+        else cycle_start_ts
+    end as cycle_end_ts,
+    reason,
+    subreason,
+    brand,
+    max(
+        case
+            when
+                src_transaction_type in (
+                    'FO_FINAL_FAIL',
+                    'FO_ADM_FINAL_FAIL',
+                    'FO_INST_FINAL_FAIL',
+                    'RN_FINAL_FAIL',
+                    'RN_ADM_FINAL_FAIL',
+                    'RN_INST_FINAL_FAIL'
+                )
+            then 1
+            else 0
+        end
+    ) over (partition by user_id, transaction_id) as txn_has_final_fail
+from clean_txn
+where rnb = 1 and date(transaction_ts) < current_date()
