@@ -1,4 +1,4 @@
-config { type:"table" }
+config { type:"table" , schema: "ods_user"}
 
 
 select

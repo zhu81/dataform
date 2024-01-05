@@ -1,0 +1,210 @@
+config {
+    type: "incremental",
+    uniqueKey: ["user_id"],
+    schema: "ods_user",
+    name: "users",
+    tags: ["hourly"],
+    assertions: {
+    nonNull: ["user_id", "reg_ts"],
+      uniqueKey: ["user_id"]
+  }
+}
+
+SELECT u.id user_id
+  , MAX(u.userContactId) contact_id
+  , max(r.regtoken) reg_token
+  , TIMESTAMP_TRUNC(MIN(u.registered), SECOND) reg_ts
+  , MIN(CASE WHEN DATE(u.registered) < "2018-01-01" THEN DATE_TRUNC(DATE(u.registered), MONTH) ELSE DATE(u.registered) END) reg_partition
+  , TIMESTAMP_TRUNC(MAX(CASE WHEN EXTRACT(YEAR FROM u.emailConfTime)=1970 THEN NULL ELSE u.emailConfTime END), SECOND) mailc_ts
+  , MAX(CASE WHEN REGEXP_CONTAINS(u.emailDomain, r'(fc4cd|btestu|insparx|paluem)')=true 
+               or u.registrationIP in ('fkfiv|1|stb2rCMaPl1PfaqnD47mJw=='
+                                      ,'fkfiv|1|Dv-8pIaqxJ1FRbfEj1bd7A=='
+                                      ,'fkfiv|1|Dk8zhm6e_9mSrd9SzX_nOQ=='
+                                      ,'fkfiv|1|Qqjbni-XCuTdeYWr3ijuOA=='
+                                      ,'fkfiv|1|fAlcdxda5vWpf972Xi06jw=='
+                                      ,'fkfiv|1|2BZD_Quwy95_2631QBpz4g=='
+                                      ,'fkfiv|1|CwB_0IIynI2pCizZG2uaaA=='
+                                      ,'fkfiv|1|Q-YXeXGZTGLCzH05Rv6rog=='
+                                      ,'fkfiv|1|TLUzJAHwl9Q5q_eyIa_EAQ=='
+                                      ,'fkfiv|1|4tGsaKrXnZ1Qm_f7m0c49Q=='
+                                      ,'fkfiv|1|lE4BofGS-dExg3U1N8W5HQ=='
+                                      ,'fkfiv|1|i_xtBEHJ3sCT75acSi63Aw==')
+               or u.id in( 64057739, 252329351,252329389,252329181)
+             THEN 1 else 0 END) test_user
+  , MAX(u.language) branch
+  , MAX(u.gender) gender
+  , STRING_AGG(SAFE_CAST( u.searchGender AS STRING) ORDER BY u.lastUpdated DESC LIMIT 1) search_gender
+  , SAFE_CAST(STRING_AGG(FORMAT("%t", DATE(u.birthday1)) ORDER BY u.lastUpdated ASC LIMIT 1) AS DATE) birthday # this will be the reg value
+  , SAFE_CAST(floor(DATE_DIFF(MAX(DATE(u.registered)), SAFE_CAST(STRING_AGG(FORMAT("%t", DATE(u.birthday1)) ORDER BY u.lastUpdated ASC LIMIT 1) AS DATE),DAY)/ 365) AS INT64) as age
+  , CASE WHEN (DATE_DIFF(MAX(DATE(u.registered)), SAFE_CAST(STRING_AGG(FORMAT("%t", DATE(u.birthday1)) ORDER BY u.lastUpdated ASC LIMIT 1) AS DATE),DAY)/ 365) < 30 THEN '18-29'
+         WHEN (DATE_DIFF(MAX(DATE(u.registered)), SAFE_CAST(STRING_AGG(FORMAT("%t", DATE(u.birthday1)) ORDER BY u.lastUpdated ASC LIMIT 1) AS DATE),DAY)/ 365) < 40 THEN '30-39'  
+         WHEN (DATE_DIFF(MAX(DATE(u.registered)), SAFE_CAST(STRING_AGG(FORMAT("%t", DATE(u.birthday1)) ORDER BY u.lastUpdated ASC LIMIT 1) AS DATE),DAY)/ 365) < 50 THEN '40-49'
+         WHEN (DATE_DIFF(MAX(DATE(u.registered)), SAFE_CAST(STRING_AGG(FORMAT("%t", DATE(u.birthday1)) ORDER BY u.lastUpdated ASC LIMIT 1) AS DATE),DAY)/ 365) < 60 THEN '50-59'        
+         ELSE '60+' 
+    END AS age_group  
+  , SAFE_CAST(STRING_AGG(FORMAT("%t", DATE(u.birthday1)) ORDER BY u.lastUpdated DESC LIMIT 1) AS DATE) birthday_latest
+  , max(safe_cast(null as STRING)) scammer_status_latest  # from userdiary
+  , STRING_AGG(u.scammerStatus ORDER BY u.lastUpdated DESC LIMIT 1) scammer_status_admintool #are the NULLs NOSCAMMER? Value is called different than in current reporting
+  , max(safe_cast(null as STRING)) member_status_latest  # from userdiary
+  , STRING_AGG(u.status ORDER BY u.lastUpdated DESC LIMIT 1) member_status_admintool #this needs to be named something different since we use FPM/NPM/PPM etc everywhere
+  , SAFE_CAST(null as TIMESTAMP) deactivation_ts # needs to be from userdiary
+  , STRING_AGG( u.emailDomain ORDER BY u.lastUpdated ASC LIMIT 1) email_domain # this will be the reg value
+  , MAX( e. email_domain ) email_domain_group
+  , STRING_AGG( u.emailDomain ORDER BY u.lastUpdated DESC LIMIT 1)  email_domain_latest
+  , MAX(safe_cast(null as STRING)) email_domain_group_latest
+  , TIMESTAMP_TRUNC(MAX(u.lastlogin), SECOND) last_login_ts
+  , MAX( safe_cast(null as INT64)) pic_upload
+  , max(u.registrationAgent) reg_device # do we want in first place consider userdiary? Also mapping?
+  , max(u.registrationOS )reg_os  # do we want in first place consider userdiary? Also mapping?
+  , MAX(safe_cast(null as STRING)) reg_ua
+  , MAX(safe_cast(null as STRING)) pay_device
+  , MAX(safe_cast(null as STRING)) pay_os
+  , MAX(safe_cast(null as STRING)) pay_ua
+  , MAX(safe_cast(null as STRING)) last_device
+  , MAX(safe_cast(null as STRING)) last_ua
+  , SAFE_CAST(STRING_AGG(SAFE_CAST(u.purchaseProbabilityScore AS STRING) ORDER BY u.lastUpdated DESC LIMIT 1) AS FLOAT64) purchase_probability_score
+  , MAX(safe_cast(null as FLOAT64) ) scammer_score
+  , max(safe_cast(null as FLOAT64)) fraud_score_latest
+  , coalesce(max(utr.country_code), STRING_AGG( u.registrationIpCountry ORDER BY u.lastUpdated ASC LIMIT 1)) reg_ip_country_code 
+  , MAX(safe_cast(null as STRING)) reg_ip_country
+  , MAX(safe_cast(null as STRING)) pay_ip_country
+  , MAX(safe_cast(null as STRING)) last_ip_country
+  , MAX(safe_cast(null as STRING)) reg_device_id
+  , MAX(safe_cast(null as STRING)) pay_device_id
+  , MAX(safe_cast(null as STRING)) last_device_id 
+  , MAX(safe_cast(null as STRING)) reg_ip_asn
+  , MAX(safe_cast(null as STRING)) pay_ip_asn
+  , MAX(safe_cast(null as STRING)) last_ip_asn
+  , MAX(safe_cast(null as STRING)) reg_ip_aso
+  , MAX(safe_cast(null as STRING)) pay_ip_aso
+  , MAX(safe_cast(null as STRING)) last_ip_aso
+  , max(coalesce(utr.ip, u.registrationIP)) reg_ip_address_encrypted
+  , MAX(safe_cast(null as INT64))	pay_ab_test_id
+  , MAX(safe_cast(null as TIMESTAMP)) pay_first_order_ts
+  , MAX(safe_cast(null as TIMESTAMP)) pay_last_order_ts
+  , MAX(safe_cast(null as TIMESTAMP)) pay_first_ls_ts
+  , TIMESTAMP_TRUNC(min(u.firstPp1VisitTime), SECOND) pay_first_pp1_ts
+  , CASE WHEN STRING_AGG(SAFE_CAST(u.notificationAllowed AS STRING)ORDER BY u.lastUpdated DESC LIMIT 1)="true" THEN 1 END crm_nf_allowed 
+  , TIMESTAMP_TRUNC(MAX(CASE WHEN u.notificationAllowed=false THEN notificationAllowedChangeTime ELSE NULL END), SECOND) crm_nf_unsubscribe_ts
+  , COALESCE(CASE WHEN STRING_AGG(SAFE_CAST(u.newsletterAllowed AS STRING)ORDER BY u.lastUpdated DESC LIMIT 1)="true" THEN 1 END, CASE WHEN STRING_AGG(SAFE_CAST(u.notificationAllowed AS STRING)ORDER BY u.lastUpdated DESC LIMIT 1)="true" THEN 1 END) crm_lc_allowed 
+  , TIMESTAMP_TRUNC(MAX(CASE WHEN u.newsletterAllowed=false THEN newsletterAllowedChangeTime ELSE NULL END), SECOND) crm_lc_unsubscribe_ts
+  , MAX(safe_cast(null as TIMESTAMP)) crm_login_first ## if already value in ods_user, then no update
+  , MAX(safe_cast(null as STRING)) crm_message_first  ## if already value in ods_user, then no update  
+  , MAX(safe_cast(null as INT64)) crm_hard_bounce
+  , STRING_AGG( u.reference ORDER BY u.lastUpdated ASC LIMIT 1)	 reg_reference
+  , max(safe_cast(null as STRING)) geo_data
+  , MAX(safe_cast(null as INT64))	crossreg_user_id
+  , MAX(safe_cast(null as INT64))	reg_ab_test_id
+  , MAX(safe_cast(u.timeToCompleteRegistration as int64)) time_to_reg_ms
+  , MAX(safe_cast(null as INT64))	pp1_visit_1h
+  , MAX(safe_cast(null as INT64))	pp2_visit_1h
+  , MAX(safe_cast(null as INT64))	pic_upload_1h
+  , MAX(safe_cast(null as INT64))	profile_delete_1h
+  , MAX(safe_cast(null as INT64))	instant_matches_1h
+  , MAX(safe_cast(null as INT64))	search_update_1h
+  , MAX(safe_cast(null as INT64))	profile_update_1h
+  , MAX(safe_cast(null as INT64))	profile_view_1h
+  , MAX(safe_cast(null as INT64))	freetext_sent_1h
+  , MAX(safe_cast(null as INT64))	fo_try_1h
+  , MAX(safe_cast(null as TIMESTAMP))	app_install_1h_ts 
+
+  #profile
+  , STRING_AGG(SAFE_CAST( u.eyesColor1 AS STRING) ORDER BY u.lastUpdated DESC LIMIT 1) eye_color
+  , STRING_AGG(SAFE_CAST( u.hairLength1 AS STRING) ORDER BY u.lastUpdated DESC LIMIT 1) hair_length
+  , STRING_AGG(SAFE_CAST( u.hairColor1 AS STRING) ORDER BY u.lastUpdated DESC LIMIT 1) hair_color
+  , STRING_AGG(SAFE_CAST( u.shape1 AS STRING) ORDER BY u.lastUpdated DESC LIMIT 1) shape
+  , STRING_AGG(SAFE_CAST( u.size1 AS STRING) ORDER BY u.lastUpdated DESC LIMIT 1) size
+  , STRING_AGG(SAFE_CAST( u.bodyart AS STRING) ORDER BY u.lastUpdated DESC LIMIT 1) bodyart
+  , STRING_AGG(SAFE_CAST( u.drinkinghabits AS STRING) ORDER BY u.lastUpdated DESC LIMIT 1) drinking_habits
+  , STRING_AGG(SAFE_CAST( u.smokinghabits AS STRING) ORDER BY u.lastUpdated DESC LIMIT 1) smoking_habits
+  , STRING_AGG(SAFE_CAST( u.familyStatus1 AS STRING) ORDER BY u.lastUpdated DESC LIMIT 1) family_status 
+  , STRING_AGG(SAFE_CAST( u.education AS STRING) ORDER BY u.lastUpdated DESC LIMIT 1) education
+  , STRING_AGG(SAFE_CAST( u.professionalfield AS STRING) ORDER BY u.lastUpdated DESC LIMIT 1) profession
+  , STRING_AGG(SAFE_CAST( u.wells AS STRING) ORDER BY u.lastUpdated DESC LIMIT 1) wells
+  , STRING_AGG(SAFE_CAST( u.prouds AS STRING) ORDER BY u.lastUpdated DESC LIMIT 1) prouds
+  , max(tr.trait_10033_values) as traits_income  
+  , max(tr.trait_10035_values) as traits_children  
+  , max(tr.trait_10034_values) as traits_religion  
+  , max(st.trait_10033_values) as search_traits_income  
+  , max(st.trait_10035_values) as search_traits_children  
+  , max(st.trait_10034_values) as search_traits_religion  
+  , max(st.trait_17_values) as search_traits_drinking
+  , max(st.trait_18_values) as search_traits_smoking
+  , max(st.trait_15_values) as search_traits_education
+  , STRING_AGG(SAFE_CAST( u.searchSizeMin AS STRING) ORDER BY u.lastUpdated DESC LIMIT 1) as search_size_min
+  , STRING_AGG(SAFE_CAST( u.searchSizeMax AS STRING) ORDER BY u.lastUpdated DESC LIMIT 1) as search_size_max
+  , STRING_AGG(SAFE_CAST( u.searchAgeMin AS STRING) ORDER BY u.lastUpdated DESC LIMIT 1) as search_age_min
+  , STRING_AGG(SAFE_CAST( u.searchAgeMax AS STRING) ORDER BY u.lastUpdated DESC LIMIT 1) as search_age_max
+  , STRING_AGG(SAFE_CAST( u.searchFamilyStatuses AS STRING) ORDER BY u.lastUpdated DESC LIMIT 1) as search_family_status
+  , STRING_AGG(SAFE_CAST( u.searchShapes AS STRING) ORDER BY u.lastUpdated DESC LIMIT 1) as search_shape
+  , STRING_AGG(SAFE_CAST( u.searchHairLengths AS STRING) ORDER BY u.lastUpdated DESC LIMIT 1) as search_hair_length
+  , STRING_AGG(SAFE_CAST( u.searchHairColors AS STRING) ORDER BY u.lastUpdated DESC LIMIT 1) as search_hair_color
+  , STRING_AGG(SAFE_CAST( u.searchEyesColors AS STRING) ORDER BY u.lastUpdated DESC LIMIT 1) as search_eye_color
+
+  , MAX(u.cid) tracking_code # this will need to be changed to guestdiary once implementation done
+  , MAX(UPPER(u.cid)) upcase_tc
+  , MAX(SAFE_CAST(null as STRING))	tracker_name
+  
+  , min(SAFE_CAST(null as TIMESTAMP)) deletion_request_ts
+  , max(SAFE_CAST(null as INT64)) as bot_score
+  , max(SAFE_CAST(null as FLOAT64)) as noLS_prob
+  , max(SAFE_CAST(null as STRING)) as last_ip_org
+  , max(SAFE_CAST(null as FLOAT64)) as reg_purchase_probability_score
+  , max(SAFE_CAST(null as FLOAT64)) as reg_mailc_probability_score
+  , max(SAFE_CAST(null as STRING)) as reg_additional_data
+
+  , max(SAFE_CAST(null as INT64)) as master_uid
+  , max(SAFE_CAST(null as INT64)) as uid_rank
+  , max(SAFE_CAST(null as STRING)) as encrypted_email
+  , max(SAFE_CAST(null as INT64)) as encrypted_email_rank
+
+
+FROM ${ref("userProfile")}  u
+
+  -- DAT-15408 user reg ip moved to userTrackingInfo
+  left join (select userId, string_agg(country order by updatedTime desc limit 1) as country_code, string_agg(ip order by updatedTime desc limit 1) as ip 
+              from ${ref("userTrackingInfo")}
+              where date(updatedTime) >= current_date()
+                  and type = "REG_IP" and country is not null
+                  and date(updatedTime) > '2023-06-13' -- iso code released on 13.06.23
+              group by userId) utr
+    on u.id = utr.userId
+  
+  left JOIN ${ref("missing_reg_tokens")} r
+    ON u.id=r.userid  
+    
+  left join (select id
+              , max(lastUpdated)
+              , string_agg(case when REGEXP_REPLACE(json_extract(t,"$.traitId"),'"','')='10033' then REGEXP_REPLACE(json_extract(t,"$.values"),'"','') else null end order by lastUpdated desc limit 1) as trait_10033_values
+              , string_agg(case when REGEXP_REPLACE(json_extract(t,"$.traitId"),'"','')='10034' then REGEXP_REPLACE(json_extract(t,"$.values"),'"','') else null end order by lastUpdated desc limit 1) as trait_10034_values
+              , string_agg(case when REGEXP_REPLACE(json_extract(t,"$.traitId"),'"','')='10035' then REGEXP_REPLACE(json_extract(t,"$.values"),'"','') else null end order by lastUpdated desc limit 1) as trait_10035_values
+            from ${ref("userProfile")} u , unnest(JSON_EXTRACT_ARRAY(traits, '$')) t
+            where REGEXP_REPLACE(json_extract(t,"$.traitId"),'"','') in ('10035','10033', '10034')
+              and date(lastUpdated) >= current_date()
+            group by id ) tr
+    on u.id = tr.id
+    
+  left join (select id
+              , max(lastUpdated)
+              , string_agg(case when REGEXP_REPLACE(json_extract(t,"$.traitId"),'"','')='10033' then REGEXP_REPLACE(json_extract(t,"$.values"),'"','') else null end order by lastUpdated desc limit 1) as trait_10033_values
+              , string_agg(case when REGEXP_REPLACE(json_extract(t,"$.traitId"),'"','')='10034' then REGEXP_REPLACE(json_extract(t,"$.values"),'"','') else null end order by lastUpdated desc limit 1) as trait_10034_values
+              , string_agg(case when REGEXP_REPLACE(json_extract(t,"$.traitId"),'"','')='10035' then REGEXP_REPLACE(json_extract(t,"$.values"),'"','') else null end order by lastUpdated desc limit 1) as trait_10035_values
+              , string_agg(case when REGEXP_REPLACE(json_extract(t,"$.traitId"),'"','')='15' then REGEXP_REPLACE(json_extract(t,"$.values"),'"','') else null end order by lastUpdated desc limit 1) as trait_15_values
+              , string_agg(case when REGEXP_REPLACE(json_extract(t,"$.traitId"),'"','')='17' then REGEXP_REPLACE(json_extract(t,"$.values"),'"','') else null end order by lastUpdated desc limit 1) as trait_17_values
+              , string_agg(case when REGEXP_REPLACE(json_extract(t,"$.traitId"),'"','')='18' then REGEXP_REPLACE(json_extract(t,"$.values"),'"','') else null end order by lastUpdated desc limit 1) as trait_18_values
+            from ${ref("userProfile")} u , unnest(JSON_EXTRACT_ARRAY(searchTraits, '$')) t
+            where REGEXP_REPLACE(json_extract(t,"$.traitId"),'"','') in ('10033', '10034','10035','15','17','18')
+              and date(lastUpdated) >= current_date()
+            group by id  ) st
+    on u.id = st.id
+  
+
+  LEFT JOIN (SELECT email_domain FROM ${ref("v_emaildomain_group")} GROUP BY 1) e  
+    ON REGEXP_REPLACE(u.emailDomain,r'\.(.+)',"") =e. email_domain
+  
+
+where date(u.lastUpdated) >= current_date()
+  and u.id not in (select user_id from ${self()})
+  and u.id is not null
+GROUP BY 1
+

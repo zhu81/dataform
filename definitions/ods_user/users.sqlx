@@ -1,1789 +1,1289 @@
-config {type: "incremental", uniqueKey : ["user_id"] }
+config {
+    type: "incremental",
+    uniqueKey: ["user_id"],
+    schema: "ods_user",
+    name: "users_daily", 
+    tags: ['daily']
+}
 
-with
-    date_range as (select date_sub(current_date(), interval 0 day) as start_date),
-    -- WITH date_range as ( SELECT date('2021-07-01') as start_date),
-    ud as (
-        select
-            user_id,
-            min(reg_ts) as reg_ts,
-            max(contact_id) as contact_id,
-            max(branch) as branch,
-            max(
-                case
-                    when event_type = 'REG_COMPLETED'
-                    then
-                        regexp_replace(
-                            json_extract(additional_data, '$.search_gender'), '"', ''
-                        )
-                    else null
-                end
-            ) as search_gender,
-            safe_cast(
-                max(
-                    case
-                        when event_type = 'PURCHASE_PROBABILITY_CLASSIFICATION'
-                        then
-                            regexp_replace(
-                                json_extract(
-                                    additional_data, '$.purchase_probability_score'
-                                ),
-                                '"',
-                                ''
-                            )
-                        else null
-                    end
-                ) as float64
-            ) as pps,
-            string_agg(
-                case
-                    when
-                        event_type in (
-                            'LOGIN_ATTEMPT',
-                            'REG_COMPLETED',
-                            'EMAIL_SENT',
-                            'LOGIN',
-                            'EMAIL_OPEN',
-                            'CHANGE_EMAIL'
-                        )
-                    then
-                        regexp_replace(
-                            json_extract(additional_data, '$.emaildomain'), '"', ''
-                        )
-                end
-                order by event_ts asc
-                limit 1
-            ) as email_domain,
-            max(
-                case when event_type = 'REG_COMPLETED' then ip_address else null end
-            ) as ip_address,
-            max(
-                safe_cast(
-                    (
-                        case
-                            when event_type = 'REG_COMPLETED'
-                            then
-                                regexp_replace(
-                                    json_extract(additional_data, '$.old_id'), '"', ''
-                                )
-                            else null
-                        end
-                    ) as int64
-                )
-            ) as crossreg_userid,
-            max(
-                safe_cast(
-                    regexp_replace(
-                        json_extract(additional_data, '$.guestAreaAbTestData'), '"', ''
-                    ) as int64
-                )
-            ) as reg_ab_test_id,
-            max(
-                safe_cast(
-                    regexp_replace(
-                        json_extract(additional_data, '$.ab_test_ids'), '"', ''
-                    ) as int64
-                )
-            ) as pay_ab_test_id,
-            max(
-                safe_cast(
-                    json_extract(additional_data, '$.time_to_reg_completion') as int64
-                )
-            ) as time_to_reg_completion_ms,
-            min(
-                case
-                    when event_type = "REG_ATTRIBUTION"
-                    then timestamp_trunc(event_ts, second)
-                    else null
-                end
-            ) app_install_ts_1h,
-            -- ,
-            -- MAX(REPLACE(JSON_EXTRACT(additional_data,'$.tracking_code_adjust'),'"','')) tracking_code_adjust
-            max(
-                replace(json_extract(additional_data, '$.tracker_name'), '"', '')
-            ) tracker_name,
-            -- , STRING_AGG(case when event_type='PURCHASE_PROBABILITY_CLASSIFICATION'
-            -- then REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.source'),'"','')
-            -- else null end ORDER BY event_ts DESC LIMIT 1)  as pps_source
-            max(
-                case
-                    when
-                        event_type = 'PP1_VISIT'
-                        and timestamp_diff(event_ts, reg_ts, hour) <= 1
-                    then 1
-                    when timestamp_diff(event_ts, reg_ts, hour) <= 1
-                    then 0
-                    else null
-                end
-            ) as pp1_visit_1h,
-            max(
-                case
-                    when
-                        event_type = 'PP2_VISIT'
-                        and timestamp_diff(event_ts, reg_ts, hour) <= 1
-                    then 1
-                    when timestamp_diff(event_ts, reg_ts, hour) <= 1
-                    then 0
-                    else null
-                end
-            ) as pp2_visit_1h,
-            max(
-                case
-                    when
-                        event_type = 'PICTURE_UPLOAD'
-                        and timestamp_diff(event_ts, reg_ts, hour) <= 1
-                    then 1
-                    when timestamp_diff(event_ts, reg_ts, hour) <= 1
-                    then 0
-                    else null
-                end
-            ) as pic_upload_1h,
-            max(
-                case
-                    when
-                        event_type in ('PROFILE_DELETION', 'ACCOUNT_DELETED')
-                        and timestamp_diff(event_ts, reg_ts, hour) <= 1
-                    then 1
-                    when event_type = 'ACCOUNT_DELETION_REQUEST'
-                    then 1
-                    when timestamp_diff(event_ts, reg_ts, hour) <= 1
-                    then 0
-                    else null
-                end
-            ) as prof_delete_1h,
-            max(
-                case
-                    when
-                        event_type = 'INSTANT_MATCHING'
-                        and timestamp_diff(event_ts, reg_ts, hour) <= 1
-                    then 1
-                    when timestamp_diff(event_ts, reg_ts, hour) <= 1
-                    then 0
-                    else null
-                end
-            ) as instant_matches_1h,
-            max(
-                case
-                    when
-                        event_type = 'SEARCH_CRITERIA_UPDATE'
-                        and timestamp_diff(event_ts, reg_ts, hour) <= 1
-                    then 1
-                    when timestamp_diff(event_ts, reg_ts, hour) <= 1
-                    then 0
-                    else null
-                end
-            ) as search_update_1h,
-            max(
-                case
-                    when
-                        event_type in ('ABOUT_ME_COMPLETION', 'PROFILE_UPDATE')
-                        and timestamp_diff(event_ts, reg_ts, hour) <= 1
-                    then 1
-                    when timestamp_diff(event_ts, reg_ts, hour) <= 1
-                    then 0
-                    else null
-                end
-            ) as profile_update_1h,
-            max(
-                case
-                    when
-                        event_type = 'PROFILE_VIEW'
-                        and timestamp_diff(event_ts, reg_ts, hour) <= 1
-                    then 1
-                    when timestamp_diff(event_ts, reg_ts, hour) <= 1
-                    then 0
-                    else null
-                end
-            ) as profile_view_1h,
-            max(
-                case
-                    when
-                        event_type = 'USERMESSAGE_SENT'
-                        and regexp_replace(
-                            json_extract(additional_data, '$.message_type'), '"', ''
-                        )
-                        = 'PLAIN'
-                        and timestamp_diff(event_ts, reg_ts, hour) <= 1
-                    then 1
-                    when timestamp_diff(event_ts, reg_ts, hour) <= 1
-                    then 0
-                    else null
-                end
-            ) as freetext_sent_1h,
-            max(
-                case
-                    when
-                        event_type in ('PAYMENT_FO_SUCCESS', 'PAYMENT_FO_FAILED')
-                        and timestamp_diff(event_ts, reg_ts, hour) <= 1
-                    then 1
-                    when timestamp_diff(event_ts, reg_ts, hour) <= 1
-                    then 0
-                    else null
-                end
-            ) as fo_attempt_1h,
-            max(trim(json_extract(additional_data, '$.reference'), '"')) reg_reference,
-            safe_cast(
-                max(
-                    case
-                        when json_extract(additional_data, "$.model_version") is null
-                        then
-                            json_extract(
-                                additional_data, "$.purchase_probability_score"
-                            )
-                        else null
-                    end
-                ) as float64
-            ) pps_old,
-            safe_cast(
-                max(
-                    case
-                        when
-                            json_extract(additional_data, "$.model_version") is not null
-                            and timestamp_diff(event_ts, reg_ts, hour) <= 1
-                        then
-                            json_extract(
-                                additional_data, "$.purchase_probability_score"
-                            )
-                        else null
-                    end
-                ) as float64
-            ) pps_new,
-            max(gender) gender,
-            string_agg(
-                scammer_status order by event_ts desc limit 1
-            ) as scammer_status_latest,
-            safe_cast(
-                string_agg(
-                    case
-                        when event_type = 'FRAUD_PAYMENT_CLASSIFICATION'
-                        then
-                            regexp_replace(
-                                json_extract(
-                                    additional_data, '$.fraud_probability_score'
-                                ),
-                                '"',
-                                ''
-                            )
-                        else null
-                    end
-                    order by event_ts desc
-                    limit 1
-                ) as float64
-            ) latest_fraud_score,
-            string_agg(
-                case
-                    when
-                        event_type
-                        in ('PROFILE_DELETION', 'ACCOUNT_DELETED', 'PAYMENT_DELETED')
-                    then 'DEL'
-                    when event_type = 'ACCOUNT_DELETION_REQUEST'
-                    then "P DEL"
-                    when
-                        event_type in (
-                            'CHANGE_MEMBER_STATUS',
-                            'CHANGE_NOTIFICATIONS',
-                            'CHANGE_EMAIL',
-                            'CS_CONTACT',
-                            'PASSWORD_CHANGE'
-                        )
-                    then member_status
-                end
-                order by event_ts desc
-                limit 1
-            ) as member_status_latest,
-            /*, STRING_AGG(case when event_type in ('PROFILE_DELETION','ACCOUNT_DELETED','PAYMENT_DELETED') then 'DEL'
-                      when REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.member_status_change_reason'),'"','')='USER_DEACTIVATION' then 'DEL'
-                      when event_type in ('CHANGE_NOTIFICATIONS','ACCOUNT_EXPORTED','CHANGE_EMAIL' ,'ACCOUNT_DELETION_REQUEST' ,'ACCOUNT_EXPORT_REQUESTED'  ,'CANCELLATION_FLOW','CS_CONTACT','PASSWORD_CHANGE') OR  (event_type = "EMAIL_SENT_STATUS" AND REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.emstatus'),'"','') = "ERROR") then member_status
-                      -- when event_ts<'2018-04-05 00:00:00' then member_status
-                      -- when event_ts>'2019-04-01 00:00:00' then member_status -- fix date TBD
-                      when event_ts >= '2018-04-05 00:00:00' and event_ts <= '2019-04-01 00:00:00' and REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.old_member_status'),'"','')<>REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.new_member_status'),'"','')then member_status
-                      when event_ts >= '2018-04-05 00:00:00' and event_ts <= '2019-04-01 00:00:00' and REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.member_status_change_reason'),'"','') = 'MAKING_FPM' and scammer_status='SCAMMER' then 'FPM'
-                      when event_ts >= '2018-04-05 00:00:00' and event_ts <= '2019-04-01 00:00:00' and REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.member_status_change_reason'),'"','') = 'MAKING_FPM' and brand in ('CDATE','EROVIE') and gender='FEMALE' then 'FPM'
-                      when event_ts >= '2018-04-05 00:00:00' and event_ts <= '2019-04-01 00:00:00' and REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.member_status_change_reason'),'"','') in ('MAKING_FPM', 'MAKING_PPM','IOS_FO','PAYMENT_CONFIRMED','PROCESSING_CBR','PROCESSING_FO_ARM','PRODUCT_ACTIVATED_AFTER_REDIRECT','PROLONGING','SUCCESSFUL_RENEWAL_ATTEMPT') then 'PPM'
-                      when event_ts >= '2018-04-05 00:00:00' and event_ts <= '2019-04-01 00:00:00' and REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.member_status_change_reason'),'"','') in ('CHARGEBACK_DEACTIVATION_SCHEDULER_EXTCO_DISABLED','DISABLING_REDEBIT_TRIES','INTCO_DEACTIVATION_SCHEDULER_EXTCO_DISABLED','IOS_EXPIRATION') then 'PENDING'
-                      when event_ts >= '2018-04-05 00:00:00' and event_ts <= '2019-04-01 00:00:00' and REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.member_status_change_reason'),'"','') in ('CHARGEBACK_DEACTIVATION_SCHEDULER_EXTCO_ENABLED','INTCO_DEACTIVATION_SCHEDULER_EXTCO_ENABLED') then 'EXTCO'
-                      when event_ts >= '2018-04-05 00:00:00' and event_ts <= '2019-04-01 00:00:00' and REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.member_status_change_reason'),'"','') in ('IOS_REFUND','PENDING_SERVICE_JOB','ADMIN_TOOL') then 'NPM'
-                      when event_ts >= '2018-04-05 00:00:00' and event_ts <= '2019-04-01 00:00:00' and REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.member_status_change_reason'),'"','') in ('FAILED_RENEWAL_ATTEMPT','RE_REGISTRATION','SCHEDULING_REDEBIT') then 'REDEBIT'
-                      when event_ts >= '2018-04-05 00:00:00' and event_ts <= '2019-04-01 00:00:00' and REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.member_status_change_reason'),'"','') in ('PSP_DISPUTE_NOTIFICATION') then 'DISPUTED'
-                      when event_ts >= '2018-04-05 00:00:00' and event_ts <= '2019-04-01 00:00:00' and REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.member_status_change_reason'),'"','') in ('PRODUCT_ALREADY_DEACTIVATED','PRODUCT_DEACTIVATED') and member_status='REDEBIT' then 'INTCO' -- Most used, not 100% correct
-                      when event_ts >= '2018-04-05 00:00:00' and event_ts <= '2019-04-01 00:00:00' and REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.member_status_change_reason'),'"','') in ('PRODUCT_ALREADY_DEACTIVATED','PRODUCT_DEACTIVATED') then 'PENDING' -- Most used, not 100% correct
-                      when event_ts >= '2018-04-05 00:00:00' and event_ts <= '2019-04-01 00:00:00' and REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.member_status_change_reason'),'"','') in ('CHARGE_FO_RO_NOTIFICATION') and member_status='PREMIUM' then 'NPM' -- Most used, not 100% correct
-                      when event_ts >= '2018-04-05 00:00:00' and event_ts <= '2019-04-01 00:00:00' and REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.member_status_change_reason'),'"','') in ('CHARGE_FO_RO_NOTIFICATION')  then 'PPM' -- Most used, not 100% correct
-                      when event_type = 'CHANGE_MEMBER_STATUS' then member_status
-                      -- not all events should be considered for member_status, same logic as in change_events
-                     -- else member_status
-                 end ORDER BY event_ts DESC LIMIT 1) as member_status_latest*/
-            max(
-                case
-                    when
-                        event_type
-                        in ('PROFILE_DELETION', 'ACCOUNT_DELETED', 'PAYMENT_DELETED')
-                    then event_ts
-                    else null
-                end
-            ) deactivation_ts,
-            safe_cast(
-                string_agg(
-                    case
-                        when
-                            coalesce(
-                                regexp_replace(
-                                    json_extract(additional_data, '$.category'), '"', ''
-                                ),
-                                regexp_replace(
-                                    json_extract(additional_data, '$.result'), '"', ''
-                                )
-                            )
-                            = "newsletter"
-                            and coalesce(
-                                regexp_replace(
-                                    json_extract(
-                                        additional_data, '$.member_status_change_reason'
-                                    ),
-                                    '"',
-                                    ''
-                                ),
-                                regexp_replace(
-                                    json_extract(additional_data, '$.type'), '"', ''
-                                )
-                            )
-                            = "subscribe"
-                        then "1"
-                        when
-                            coalesce(
-                                regexp_replace(
-                                    json_extract(additional_data, '$.category'), '"', ''
-                                ),
-                                regexp_replace(
-                                    json_extract(additional_data, '$.result'), '"', ''
-                                )
-                            )
-                            = "newsletter"
-                            and coalesce(
-                                regexp_replace(
-                                    json_extract(
-                                        additional_data, '$.member_status_change_reason'
-                                    ),
-                                    '"',
-                                    ''
-                                ),
-                                regexp_replace(
-                                    json_extract(additional_data, '$.type'), '"', ''
-                                )
-                            )
-                            = "unsubscribe"
-                        then "0"
-                        else null
-                    end
-                    order by event_ts desc
-                    limit 1
-                ) as int64
-            ) as newsletter_allowed,
-            safe_cast(
-                string_agg(
-                    case
-                        when
-                            coalesce(
-                                regexp_replace(
-                                    json_extract(additional_data, '$.category'), '"', ''
-                                ),
-                                regexp_replace(
-                                    json_extract(additional_data, '$.result'), '"', ''
-                                )
-                            )
-                            = "notifications"
-                            and coalesce(
-                                regexp_replace(
-                                    json_extract(
-                                        additional_data, '$.member_status_change_reason'
-                                    ),
-                                    '"',
-                                    ''
-                                ),
-                                regexp_replace(
-                                    json_extract(additional_data, '$.type'), '"', ''
-                                )
-                            )
-                            = "subscribe"
-                        then "1"
-                        when
-                            coalesce(
-                                regexp_replace(
-                                    json_extract(additional_data, '$.category'), '"', ''
-                                ),
-                                regexp_replace(
-                                    json_extract(additional_data, '$.result'), '"', ''
-                                )
-                            )
-                            = "notifications"
-                            and coalesce(
-                                regexp_replace(
-                                    json_extract(
-                                        additional_data, '$.member_status_change_reason'
-                                    ),
-                                    '"',
-                                    ''
-                                ),
-                                regexp_replace(
-                                    json_extract(additional_data, '$.type'), '"', ''
-                                )
-                            )
-                            = "unsubscribe"
-                        then "0"
-                        else null
-                    end
-                    order by event_ts desc
-                    limit 1
-                ) as int64
-            ) as notification_allowed,
-            string_agg(
-                regexp_replace(json_extract(additional_data, '$.emaildomain'), '"', '')
-                order by event_ts desc
-                limit 1
-            ) as email_domain_latest,
-            max(
-                case
-                    when
-                        event_type = "EMAIL_SENT_STATUS"
-                        and regexp_replace(
-                            json_extract(additional_data, '$.emstatuscodes'), '"', ''
-                        )
-                        like "-%"
-                    then 1
-                    else null
-                end
-            ) hard_bounce,
-            safe_cast(
-                string_agg(
-                    safe_cast(
-                        json_extract(additional_data, '$.scammer_score') as string
-                    )
-                    order by event_ts desc
-                    limit 1
-                ) as float64
-            ) as scammer_score,
-            max(
-                timestamp_trunc(
-                    timestamp(safe_cast(email_confirm_ts as string)), second
-                )
-            ) mailc_ts,
-            max(
-                case
-                    when event_type = "REG_COMPLETED"
-                    then
-                        case
-                            when ua_type = 'Mobile Hybrid Browser'
-                            then 'App'
-                            when ua_class = 'MOBILE_NATIVE'
-                            then 'App'
-                            when ua_os = 'Android'
-                            then 'Mobile'
-                            when ua_os = 'iOS'
-                            then 'Mobile'
-                            when ua_os = 'OS X'
-                            then 'Desktop'
-                            when ua_os = 'Mac OS'
-                            then 'Desktop'
-                            when ua_type = 'Mobile Browser'
-                            then 'Mobile'
-                            when ua_os = 'Windows'
-                            then 'Desktop'
-                            when ua_type = 'Browser'
-                            then 'Desktop'
-                            when ua_class = 'CLASSIC'
-                            then 'Desktop'
-                            when ua_class = 'MOBILE_WEB'
-                            then 'Mobile'
-                            else 'Desktop'
-                        end
-                    else null
-                end
-            ) as reg_agent,
-            max(
-                case
-                    when event_type = "REG_COMPLETED"
-                    then
-                        case
-                            when ua_os = 'Android'
-                            then 'Android'
-                            when ua_os = 'iOS'
-                            then 'iOS'
-                            when ua_os = 'Windows'
-                            then 'Windows'
-                            when ua_os = 'OS X'
-                            then 'OS X'
-                            when ua_os = 'Mac OS'
-                            then 'OS X'
-                            else 'Other'
-                        end
-                    else null
-                end
-            ) as reg_os,
-            max(
-                case when event_type = "REG_COMPLETED" then date(birthday) else null end
-            ) birthday,
-            max(
-                case
-                    when event_type = "REG_COMPLETED"
-                    then
-                        safe_cast(
-                            floor(
-                                timestamp_diff(
-                                    timestamp(safe_cast(reg_ts as string)),
-                                    timestamp(safe_cast(birthday as string)),
-                                    day
-                                )
-                                / 365
-                            ) as int64
-                        )
-                    else null
-                end
-            ) age,
-            max(
-                case
-                    when event_type = "REG_COMPLETED"
-                    then
-                        case
-                            when
-                                (
-                                    timestamp_diff(
-                                        timestamp(safe_cast(reg_ts as string)),
-                                        timestamp(safe_cast(birthday as string)),
-                                        day
-                                    )
-                                    / 365
-                                )
-                                < 30
-                            then '18-29'
-                            when
-                                (
-                                    timestamp_diff(
-                                        timestamp(safe_cast(reg_ts as string)),
-                                        timestamp(safe_cast(birthday as string)),
-                                        day
-                                    )
-                                    / 365
-                                )
-                                < 40
-                            then '30-39'
-                            when
-                                (
-                                    timestamp_diff(
-                                        timestamp(safe_cast(reg_ts as string)),
-                                        timestamp(safe_cast(birthday as string)),
-                                        day
-                                    )
-                                    / 365
-                                )
-                                < 50
-                            then '40-49'
-                            when
-                                (
-                                    timestamp_diff(
-                                        timestamp(safe_cast(reg_ts as string)),
-                                        timestamp(safe_cast(birthday as string)),
-                                        day
-                                    )
-                                    / 365
-                                )
-                                < 60
-                            then '50-59'
-                            else '60+'
-                        end
-                    else null
-                end
-            ) age_cluster,
-            max(
-                regexp_replace(
-                    json_extract(additional_data, '$.user_reference'), '"', ''
-                )
-            ) as reg_token,
-            max(geo_data) as geo_data,
-            max(
-                case
-                    when event_type = "REG_COMPLETED"
-                    then trim(json_extract(additional_data, '$.ip_asn'), '"')
-                    else null
-                end
-            ) as ip_asn_reg,
-            max(
-                case
-                    when event_type = "REG_COMPLETED"
-                    then trim(json_extract(additional_data, '$.ip_aso'), '"')
-                    else null
-                end
-            ) as ip_aso_reg,
-            max(
-                case when event_type = "REG_COMPLETED" then ip_country else null end
-            ) as ip_country_reg,
-            max(case when event_type = "REG_COMPLETED" then ua else null end) as ua_reg,
-            max(
-                case
-                    when event_type = "PAYMENT_FO_SUCCESS"
-                    then trim(json_extract(additional_data, '$.ip_asn'), '"')
-                    else null
-                end
-            ) as ip_asn_fo,
-            max(
-                case
-                    when event_type = "PAYMENT_FO_SUCCESS"
-                    then trim(json_extract(additional_data, '$.ip_aso'), '"')
-                    else null
-                end
-            ) as ip_aso_fo,
-            max(
-                case
-                    when event_type = "PAYMENT_FO_SUCCESS"
-                    then trim(json_extract(additional_data, '$.deviceid'), '"')
-                    else null
-                end
-            ) as deviceid_fo,
-            max(
-                case
-                    when event_type = "PAYMENT_FO_SUCCESS" then ip_country else null
-                end
-            ) as ip_country_fo,
-            max(
-                case when event_type = "PAYMENT_FO_SUCCESS" then ua else null end
-            ) as ua_fo,
-            max(
-                case
-                    when event_type = "PAYMENT_FO_SUCCESS"
-                    then
-                        case
-                            when ua_type = 'Mobile Hybrid Browser'
-                            then 'App'
-                            when ua_class = 'MOBILE_NATIVE'
-                            then 'App'
-                            when ua_os = 'Android'
-                            then 'Mobile'
-                            when ua_os = 'iOS'
-                            then 'Mobile'
-                            when ua_os = 'OS X'
-                            then 'Desktop'
-                            when ua_os = 'Mac OS'
-                            then 'Desktop'
-                            when ua_type = 'Mobile Browser'
-                            then 'Mobile'
-                            when ua_os = 'Windows'
-                            then 'Desktop'
-                            when ua_type = 'Browser'
-                            then 'Desktop'
-                            when ua_class = 'CLASSIC'
-                            then 'Desktop'
-                            when ua_class = 'MOBILE_WEB'
-                            then 'Mobile'
-                            else 'Desktop'
-                        end
-                    else null
-                end
-            ) as pay_user_agent,
-            max(
-                case
-                    when event_type = "PAYMENT_FO_SUCCESS"
-                    then
-                        case
-                            when ua_os = 'Android'
-                            then 'Android'
-                            when ua_os = 'iOS'
-                            then 'iOS'
-                            when ua_os = 'Windows'
-                            then 'Windows'
-                            when ua_os = 'OS X'
-                            then 'OS X'
-                            when ua_os = 'Mac OS'
-                            then 'OS X'
-                            else 'Other'
-                        end
-                    else null
-                end
-            ) as pay_os,
-            max(
-                case
-                    when event_type in ('LOGIN', 'REG_COMPLETED')
-                    then timestamp_trunc(event_ts, second)
-                    else null
-                end
-            ) last_login_ts,
-            min(
-                case
-                    when
-                        regexp_replace(json_extract(additional_data, '$.type'), '"', '')
-                        = "crm"
-                        or (
-                            event_type = 'LOGIN'
-                            and json_extract(additional_data, '$.source') like '%:NF:%'
-                        )
-                        or (
-                            event_type = 'LOGIN'
-                            and json_extract(additional_data, '$.source') like '%:CP:%'
-                        )
-                        or (
-                            event_type = 'LOGIN'
-                            and json_extract(additional_data, '$.source') like '%:LC:%'
-                        )
-                        or (
-                            event_type = 'LOGIN'
-                            and json_extract(additional_data, '$.source') like '%:LC-%'
-                        )
-                    then timestamp_trunc(event_ts, second)
-                    else null
-                end
-            ) first_crm_login,
-            string_agg(
-                case
-                    when
-                        regexp_replace(json_extract(additional_data, '$.type'), '"', '')
-                        = "crm"
-                        or (
-                            event_type = 'LOGIN'
-                            and json_extract(additional_data, '$.source') like '%:NF:%'
-                        )
-                        or (
-                            event_type = 'LOGIN'
-                            and json_extract(additional_data, '$.source') like '%:CP:%'
-                        )
-                        or (
-                            event_type = 'LOGIN'
-                            and json_extract(additional_data, '$.source') like '%:LC:%'
-                        )
-                        or (
-                            event_type = 'LOGIN'
-                            and json_extract(additional_data, '$.source') like '%:LC-%'
-                        )
-                    then
-                        ifnull(
-                            regexp_replace(
-                                json_extract(additional_data, '$.source'), '"', ''
-                            ),
-                            case when event_type = 'REG_COMPLETED' then 'RegComp' end
-                        )
-                    else null
-                end
-                order by event_ts asc
-                limit 1
-            ) as first_crm_message,
-            string_agg(
-                case
-                    when event_type = "REG_COMPLETED"
-                    then
-                        case
-                            when ua_type = 'Mobile Hybrid Browser'
-                            then 'App'
-                            when ua_class = 'MOBILE_NATIVE'
-                            then 'App'
-                            when ua_os = 'Android'
-                            then 'Mobile'
-                            when ua_os = 'iOS'
-                            then 'Mobile'
-                            when ua_os = 'OS X'
-                            then 'Desktop'
-                            when ua_os = 'Mac OS'
-                            then 'Desktop'
-                            when ua_type = 'Mobile Browser'
-                            then 'Mobile'
-                            when ua_os = 'Windows'
-                            then 'Desktop'
-                            when ua_type = 'Browser'
-                            then 'Desktop'
-                            when ua_class = 'CLASSIC'
-                            then 'Desktop'
-                            when ua_class = 'MOBILE_WEB'
-                            then 'Mobile'
-                            else 'Desktop'
-                        end
-                    else null
-                end
-                order by event_ts desc
-                limit 1
-            ) as user_agent_latest,
-            string_agg(
-                case
-                    when
-                        regexp_replace(
-                            json_extract(additional_data, '$.source'), '"', ''
-                        )
-                        = "reg"
-                    then trim(json_extract(additional_data, '$.deviceid'), '"')
-                    else null
-                end
-                order by event_ts desc
-                limit 1
-            ) as deviceid_reg,
-            string_agg(
-                trim(json_extract(additional_data, '$.ip_asn'), '"')
-                order by event_ts desc
-                limit 1
-            ) as ip_asn_latest,
-            string_agg(
-                trim(json_extract(additional_data, '$.ip_aso'), '"')
-                order by event_ts desc
-                limit 1
-            ) as ip_aso_latest,
-            string_agg(
-                trim(json_extract(additional_data, '$.deviceid'), '"')
-                order by event_ts desc
-                limit 1
-            ) as deviceid_latest,
-            string_agg(ip_country order by event_ts desc limit 1) as ip_country_latest,
-            string_agg(ua order by event_ts desc limit 1) as ua_latest,
-            string_agg(
-                trim(json_extract(additional_data, '$.ip_org'), '"')
-                order by event_ts desc
-                limit 1
-            ) as ip_org_latest,
-            string_agg(
-                case
-                    when event_type = "REG_COMPLETED"
-                    then
-                        case
-                            when ua_type = 'Mobile Hybrid Browser'
-                            then 'App'
-                            when ua_class = 'MOBILE_NATIVE'
-                            then 'App'
-                            when ua_os = 'Android'
-                            then 'Mobile'
-                            when ua_os = 'iOS'
-                            then 'Mobile'
-                            when ua_os = 'OS X'
-                            then 'Desktop'
-                            when ua_os = 'Mac OS'
-                            then 'Desktop'
-                            when ua_type = 'Mobile Browser'
-                            then 'Mobile'
-                            when ua_os = 'Windows'
-                            then 'Desktop'
-                            when ua_type = 'Browser'
-                            then 'Desktop'
-                            when ua_class = 'CLASSIC'
-                            then 'Desktop'
-                            when ua_class = 'MOBILE_WEB'
-                            then 'Mobile'
-                            else 'Desktop'
-                        end
-                    else null
-                end
-                order by event_ts asc
-                limit 1
-            ) as user_agent_first,
-            string_agg(
-                case
-                    when event_type = "PAYMENT_FO_SUCCESS"
-                    then
-                        case
-                            when ua_os = 'Android'
-                            then 'Android'
-                            when ua_os = 'iOS'
-                            then 'iOS'
-                            when ua_os = 'Windows'
-                            then 'Windows'
-                            when ua_os = 'OS X'
-                            then 'OS X'
-                            when ua_os = 'Mac OS'
-                            then 'OS X'
-                            else 'Other'
-                        end
-                    else null
-                end
-                order by event_ts asc
-                limit 1
-            ) as user_os_first,
-            max(
-                case when event_type = 'PICTURE_UPLOAD' then 1 else null end
-            ) pic_upload,
-            case
-                when
-                    array_length(
-                        regexp_extract_all(
-                            string_agg(
-                                trim(
-                                    json_extract(
-                                        additional_data,
-                                        '$.changed_profile_properties.birthday'
-                                    ),
-                                    '"'
-                                )
-                                order by event_ts desc
-                                limit 1
-                            ),
-                            ","
-                        )
-                    )
-                    = 2
-                then
-                    date(
-                        parse_datetime(
-                            "%h %e, %Y, %I:%S:%M %p",
-                            string_agg(
-                                trim(
-                                    json_extract(
-                                        additional_data,
-                                        '$.changed_profile_properties.birthday'
-                                    ),
-                                    '"'
-                                )
-                                order by event_ts desc
-                                limit 1
-                            )
-                        )
-                    )
-                else
-                    date(
-                        parse_datetime(
-                            "%h %e, %Y %I:%S:%M %p",
-                            string_agg(
-                                trim(
-                                    json_extract(
-                                        additional_data,
-                                        '$.changed_profile_properties.birthday'
-                                    ),
-                                    '"'
-                                )
-                                order by event_ts desc
-                                limit 1
-                            )
-                        )
-                    )
-            end as birthday_latest,
-            min(
-                case
-                    when event_type = 'PAYMENT_FO_SUCCESS'
-                    then timestamp_trunc(event_ts, second)
-                end
-            ) first_order_ts,
-            max(
-                case
-                    when event_type = 'PAYMENT_FO_SUCCESS'
-                    then timestamp_trunc(event_ts, second)
-                end
-            ) latest_order_ts,
-            min(
-                case
-                    when event_type = 'ACCOUNT_DELETION_REQUEST'
-                    then timestamp_trunc(event_ts, second)
-                end
-            ) deletion_request_ts,
-            max(
-                safe_cast(
-                    (
-                        case
-                            when event_type = 'REG_COMPLETED'
-                            then
-                                trim(
-                                    json_extract(additional_data, '$.cdn_bot_score'),
-                                    '"'
-                                )
-                        end
-                    ) as int64
-                )
-            ) as bot_score,
-            max(
-                case
-                    when event_type = 'PURCHASE_PROBABILITY_CLASSIFICATION'
-                    then
-                        safe_cast(
-                            json_extract(additional_data, '$.noLS.prob') as float64
-                        )
-                end
-            ) as nols_prob,
-            max(
-                case
-                    when event_type = 'PPS_REG_CLASSIFICATION'
-                    then
-                        safe_cast(
-                            json_extract(
-                                additional_data, '$.purchase_probability_score'
-                            ) as float64
-                        )
-                end
-            ) as reg_purchase_probability_score,
-            max(
-                case
-                    when event_type = 'PPS_REG_CLASSIFICATION'
-                    then
-                        safe_cast(
-                            json_extract(additional_data, '$.mailC.score') as float64
-                        )
-                end
-            ) as reg_mailc_probability_score,
-            max(
-                case when event_type = 'REG_COMPLETED' then additional_data end
-            ) as reg_additional_data,
-            max(tracking_code) as tracking_code
-        from ${ ref("userdiary_all") }
-        where date(event_ts) >= (select start_date from date_range)
-        # and DATE(event_ts) < (select end_date from date_range)
-        group by user_id
-    ),
-
-    user_base as (
-        select user_id
-        from
-            (
-                select id user_id
-                from ${ ref("userProfile") }
-                where
-                    date(lastupdated) >= (select start_date from date_range)
-                    and id is not null
-                union all
-                select user_id
-                from ${ self() }
-                where user_id is not null
-                union all
-                select user_id
-                from ud
-                where user_id is not null
-            )
-        group by user_id
-    )
-
-select
-    ub.user_id user_id,
-    max(coalesce(u.usercontactid, ou.contact_id, ud.contact_id)) contact_id,
-    max(coalesce(ud.reg_token, ou.reg_token, r.regtoken)) reg_token,
-    timestamp_trunc(min(coalesce(ou.reg_ts, u.registered, ud.reg_ts)), second) reg_ts,
-    min(
-        case
-            when date(coalesce(ou.reg_ts, u.registered, ud.reg_ts)) < "2018-01-01"
-            then date_trunc(date(coalesce(ou.reg_ts, u.registered, ud.reg_ts)), month)
-            else date(coalesce(ou.reg_ts, u.registered, ud.reg_ts))
-        end
-    ) reg_partition,
-    timestamp_trunc(
-        max(
-            coalesce(
-                case
-                    when extract(year from ud.mailc_ts) = 1970
-                    then null
-                    else ud.mailc_ts
-                end,
-                case
-                    when extract(year from ou.mailc_ts) = 1970
-                    then null
-                    else ou.mailc_ts
-                end,
-                case
-                    when extract(year from u.emailconftime) = 1970
-                    then null
-                    else u.emailconftime
-                end
-            )
-        ),
-        second
-    ) mailc_ts,
-    max(
-        coalesce(
-            case
-                when ub.user_id in (64057739, 252329351, 252329389, 252329181)
-                then 1
-                else null
-            end,
-            case when ou.test_user = 0 then null else ou.test_user end,
-            case
-                when
-                    regexp_contains(u.emaildomain, r'(fc4cd|btestu|insparx|paluem)')
-                    = true
-                then 1
-            end,
-            case
-                when
-                    regexp_contains(ud.email_domain, r'(fc4cd|btestu|insparx|paluem)')
-                    = true
-                then 1
-            end,
-            0
-        )
-    ) test_user,
-    max(coalesce(u.language, ou.branch, ud.branch)) branch,
-    max(coalesce(u.gender, ud.gender, ou.gender, "MALE")) gender,
-    coalesce(
-        string_agg(
-            safe_cast(u.searchgender as string) order by u.lastupdated desc limit 1
-        ),
-        max(ou.search_gender),
-        max(ud.search_gender)
-    ) search_gender,
-    coalesce(
-        max(ou.birthday),
-        safe_cast(
-            string_agg(
-                format("%t", date(u.birthday1)) order by u.lastupdated asc limit 1
-            ) as date
-        ),
-        max(ud.birthday)
-    ) birthday,  # this will be the reg value
-    coalesce(
-        max(ou.age),
-        safe_cast(
-            floor(
-                date_diff(
-                    max(date(u.registered)),
-                    safe_cast(
-                        string_agg(
-                            format("%t", date(u.birthday1))
-                            order by u.lastupdated asc
-                            limit 1
-                        ) as date
-                    ),
-                    day
-                )
-                / 365
-            ) as int64
-        ),
-        max(ud.age)
-    ) as age,
-    coalesce(
-        max(ou.age_group),
-        case
-            when
-                (
-                    date_diff(
-                        max(date(u.registered)),
-                        safe_cast(
-                            string_agg(
-                                format("%t", date(u.birthday1))
-                                order by u.lastupdated asc
-                                limit 1
-                            ) as date
-                        ),
-                        day
-                    )
-                    / 365
-                )
-                < 30
-            then '18-29'
-            when
-                (
-                    date_diff(
-                        max(date(u.registered)),
-                        safe_cast(
-                            string_agg(
-                                format("%t", date(u.birthday1))
-                                order by u.lastupdated asc
-                                limit 1
-                            ) as date
-                        ),
-                        day
-                    )
-                    / 365
-                )
-                < 40
-            then '30-39'
-            when
-                (
-                    date_diff(
-                        max(date(u.registered)),
-                        safe_cast(
-                            string_agg(
-                                format("%t", date(u.birthday1))
-                                order by u.lastupdated asc
-                                limit 1
-                            ) as date
-                        ),
-                        day
-                    )
-                    / 365
-                )
-                < 50
-            then '40-49'
-            when
-                (
-                    date_diff(
-                        max(date(u.registered)),
-                        safe_cast(
-                            string_agg(
-                                format("%t", date(u.birthday1))
-                                order by u.lastupdated asc
-                                limit 1
-                            ) as date
-                        ),
-                        day
-                    )
-                    / 365
-                )
-                < 60
-            then '50-59'
-            else '60+'
-        end,
-        max(ud.age_cluster)
-    ) as age_group,
-    coalesce(
-        max(ud.birthday_latest),
-        safe_cast(
-            string_agg(
-                format("%t", date(u.birthday1)) order by u.lastupdated desc limit 1
-            ) as date
-        ),
-        max(ou.birthday)
-    ) birthday_latest,
-    max(
-        coalesce(ud.scammer_status_latest, ou.scammer_status_latest, "NOSCAMMER")
-    ) scammer_status_latest,  # from userdiary
-    coalesce(
-        string_agg(u.scammerstatus order by u.lastupdated desc limit 1),
-        max(ou.scammer_status_admintool)
-    ) scammer_status_admintool,  # are the NULLs NOSCAMMER? Value is called different than in current reporting
-    # , MAX(COALESCE(case when ou.member_status_latest = 'DEL' then
-    # ou.member_status_latest end, ud. member_status_latest, ou. member_status_latest,
-    # "NPM") ) member_status_latest
-    max(
-        case
-            when coalesce(ud.member_status_latest, ou.member_status_latest) = "DEL"
-            then "DEL"
-            when
-                coalesce(ud.deletion_request_ts, ou.deletion_request_ts) is not null
-                and coalesce(ud.deactivation_ts, ou.deactivation_ts) is null
-            then "P DEL"
-            when
-                coalesce(ud.member_status_latest, ou.member_status_latest) = "NPM"
-                and coalesce(u.status, ou.member_status_admintool) = "MEMBER"
-            then "NPM"
-            when
-                coalesce(ud.member_status_latest, ou.member_status_latest)
-                in ("FPM", "PPM")
-                and coalesce(u.status, ou.member_status_admintool) = "PREMIUM"
-            then coalesce(ud.member_status_latest, ou.member_status_latest)
-            when
-                coalesce(ud.member_status_latest, ou.member_status_latest) = "PPM"
-                and coalesce(u.status, ou.member_status_admintool) = "MEMBER"
-            then "NPM"
-            when
-                coalesce(u.language, ou.branch, ud.branch) like "%US%"
-                or coalesce(u.language, ou.branch, ud.branch) like "%CA%"
-                and coalesce(u.status, ou.member_status_admintool) = "PREMIUM"
-            then "FPM"
-            when coalesce(u.status, ou.member_status_admintool) = "MEMBER"
-            then "NPM"
-            when
-                coalesce(u.status, ou.member_status_admintool) = "PREMIUM"
-                and coalesce(u.gender, ud.gender, ou.gender, "MALE") = "FEMALE"
-                and coalesce(ou.search_gender, ud.search_gender) = "MALE"
-                and coalesce(u.language, ou.branch, ud.branch) not like "%-%"
-            then "FPM"
-            when coalesce(u.status, ou.member_status_admintool) = "PREMIUM"
-            then "PPM"
-            when coalesce(u.status, ou.member_status_admintool) is null
-            then coalesce(ud.member_status_latest, ou.member_status_latest)
-            else coalesce(u.status, ou.member_status_admintool, "NPM")
-        end
-    ) member_status_latest,
-    coalesce(
-        string_agg(u.status order by u.lastupdated desc limit 1),
-        max(ou.member_status_admintool)
-    ) member_status_admintool,  # this needs to be named something different since we use FPM/NPM/PPM etc everywhere
-    max(coalesce(ud.deactivation_ts, ou.deactivation_ts)) deactivation_ts,  # needs to be from userdiary
-    coalesce(
-        max(ou.email_domain),
-        string_agg(u.emaildomain order by u.lastupdated asc limit 1),
-        max(ud.email_domain)
-    ) email_domain,  # this will be the reg value
-    max(
-        coalesce(
-            ou.email_domain_group,
-            case when e.email_domain is null then "other" else e.email_domain end
-        )
-    ) email_domain_group,
-    coalesce(
-        max(ud.email_domain_latest),
-        string_agg(u.emaildomain order by u.lastupdated desc limit 1),
-        max(ou.email_domain)
-    ) email_domain_latest,
-    max(
-        coalesce(
-            case when eg.email_domain is null then "other" else eg.email_domain end,
-            ou.email_domain_group_latest
-        )
-    ) email_domain_group_latest,
-    timestamp_trunc(
-        max(coalesce(ud.last_login_ts, u.lastlogin, ou.last_login_ts, ou.reg_ts)),
-        second
+WITH
+  date_range AS (
+  SELECT
+    DATE_SUB(CURRENT_DATE(), INTERVAL 0 day) AS start_date),
+  -- WITH date_range as ( SELECT date('2021-07-01') as start_date),
+  ud AS (
+SELECT
+  user_id,
+  MIN(reg_ts) AS reg_ts,
+  MAX(contact_id) AS contact_id,
+  MAX(branch) AS branch,
+  MAX(
+    CASE
+      WHEN event_type = 'REG_COMPLETED' THEN REGEXP_REPLACE( JSON_EXTRACT(additional_data, '$.search_gender'), '"', '' )
+    ELSE
+    NULL
+  END
+    ) AS search_gender,
+  SAFE_CAST( MAX(
+      CASE
+        WHEN event_type = 'PURCHASE_PROBABILITY_CLASSIFICATION' THEN REGEXP_REPLACE( JSON_EXTRACT( additional_data, '$.purchase_probability_score' ), '"', '' )
+      ELSE
+      NULL
+    END
+      ) AS float64 ) AS pps,
+  STRING_AGG(
+    CASE
+      WHEN event_type IN ( 'LOGIN_ATTEMPT', 'REG_COMPLETED', 'EMAIL_SENT', 'LOGIN', 'EMAIL_OPEN', 'CHANGE_EMAIL' ) THEN REGEXP_REPLACE( JSON_EXTRACT(additional_data, '$.emaildomain'), '"', '' )
+  END
+  ORDER BY
+    event_ts ASC
+  LIMIT
+    1 ) AS email_domain,
+  MAX(
+    CASE
+      WHEN event_type = 'REG_COMPLETED' THEN ip_address
+    ELSE
+    NULL
+  END
+    ) AS ip_address,
+  MAX( SAFE_CAST( (
+        CASE
+          WHEN event_type = 'REG_COMPLETED' THEN REGEXP_REPLACE( JSON_EXTRACT(additional_data, '$.old_id'), '"', '' )
+        ELSE
+        NULL
+      END
+        ) AS int64 ) ) AS crossreg_userid,
+  MAX( SAFE_CAST( REGEXP_REPLACE( JSON_EXTRACT(additional_data, '$.guestAreaAbTestData'), '"', '' ) AS int64 ) ) AS reg_ab_test_id,
+  MAX( SAFE_CAST( REGEXP_REPLACE( JSON_EXTRACT(additional_data, '$.ab_test_ids'), '"', '' ) AS int64 ) ) AS pay_ab_test_id,
+  MAX( SAFE_CAST( JSON_EXTRACT(additional_data, '$.time_to_reg_completion') AS int64 ) ) AS time_to_reg_completion_ms,
+  MIN(
+    CASE
+      WHEN event_type = "REG_ATTRIBUTION" THEN TIMESTAMP_TRUNC(event_ts, second)
+    ELSE
+    NULL
+  END
+    ) app_install_ts_1h,
+  -- ,
+  -- MAX(REPLACE(JSON_EXTRACT(additional_data,'$.tracking_code_adjust'),'"','')) tracking_code_adjust
+  MAX( REPLACE(JSON_EXTRACT(additional_data, '$.tracker_name'), '"', '') ) tracker_name,
+  -- , STRING_AGG(case when event_type='PURCHASE_PROBABILITY_CLASSIFICATION'
+  -- then REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.source'),'"','')
+  -- else null end ORDER BY event_ts DESC LIMIT 1)  as pps_source
+  MAX(
+  CASE
+    WHEN event_type = 'PP1_VISIT' AND TIMESTAMP_DIFF(event_ts, reg_ts, hour) <= 1 THEN 1
+    WHEN TIMESTAMP_DIFF(event_ts, reg_ts, hour) <= 1 THEN 0
+  ELSE
+  NULL
+END
+  ) AS pp1_visit_1h,
+  MAX(
+    CASE
+      WHEN event_type = 'PP2_VISIT' AND TIMESTAMP_DIFF(event_ts, reg_ts, hour) <= 1 THEN 1
+      WHEN TIMESTAMP_DIFF(event_ts, reg_ts, hour) <= 1 THEN 0
+    ELSE
+    NULL
+  END
+    ) AS pp2_visit_1h,
+  MAX(
+    CASE
+      WHEN event_type = 'PICTURE_UPLOAD' AND TIMESTAMP_DIFF(event_ts, reg_ts, hour) <= 1 THEN 1
+      WHEN TIMESTAMP_DIFF(event_ts, reg_ts, hour) <= 1 THEN 0
+    ELSE
+    NULL
+  END
+    ) AS pic_upload_1h,
+  MAX(
+    CASE
+      WHEN event_type IN ('PROFILE_DELETION', 'ACCOUNT_DELETED') AND TIMESTAMP_DIFF(event_ts, reg_ts, hour) <= 1 THEN 1
+      WHEN event_type = 'ACCOUNT_DELETION_REQUEST' THEN 1
+      WHEN TIMESTAMP_DIFF(event_ts, reg_ts, hour) <= 1 THEN 0
+    ELSE
+    NULL
+  END
+    ) AS prof_delete_1h,
+  MAX(
+    CASE
+      WHEN event_type = 'INSTANT_MATCHING' AND TIMESTAMP_DIFF(event_ts, reg_ts, hour) <= 1 THEN 1
+      WHEN TIMESTAMP_DIFF(event_ts, reg_ts, hour) <= 1 THEN 0
+    ELSE
+    NULL
+  END
+    ) AS instant_matches_1h,
+  MAX(
+    CASE
+      WHEN event_type = 'SEARCH_CRITERIA_UPDATE' AND TIMESTAMP_DIFF(event_ts, reg_ts, hour) <= 1 THEN 1
+      WHEN TIMESTAMP_DIFF(event_ts, reg_ts, hour) <= 1 THEN 0
+    ELSE
+    NULL
+  END
+    ) AS search_update_1h,
+  MAX(
+    CASE
+      WHEN event_type IN ('ABOUT_ME_COMPLETION', 'PROFILE_UPDATE') AND TIMESTAMP_DIFF(event_ts, reg_ts, hour) <= 1 THEN 1
+      WHEN TIMESTAMP_DIFF(event_ts, reg_ts, hour) <= 1 THEN 0
+    ELSE
+    NULL
+  END
+    ) AS profile_update_1h,
+  MAX(
+    CASE
+      WHEN event_type = 'PROFILE_VIEW' AND TIMESTAMP_DIFF(event_ts, reg_ts, hour) <= 1 THEN 1
+      WHEN TIMESTAMP_DIFF(event_ts, reg_ts, hour) <= 1 THEN 0
+    ELSE
+    NULL
+  END
+    ) AS profile_view_1h,
+  MAX(
+    CASE
+      WHEN event_type = 'USERMESSAGE_SENT' AND REGEXP_REPLACE( JSON_EXTRACT(additional_data, '$.message_type'), '"', '' ) = 'PLAIN' AND TIMESTAMP_DIFF(event_ts, reg_ts, hour) <= 1 THEN 1
+      WHEN TIMESTAMP_DIFF(event_ts, reg_ts, hour) <= 1 THEN 0
+    ELSE
+    NULL
+  END
+    ) AS freetext_sent_1h,
+  MAX(
+    CASE
+      WHEN event_type IN ('PAYMENT_FO_SUCCESS', 'PAYMENT_FO_FAILED') AND TIMESTAMP_DIFF(event_ts, reg_ts, hour) <= 1 THEN 1
+      WHEN TIMESTAMP_DIFF(event_ts, reg_ts, hour) <= 1 THEN 0
+    ELSE
+    NULL
+  END
+    ) AS fo_attempt_1h,
+  MAX(TRIM(JSON_EXTRACT(additional_data, '$.reference'), '"')) reg_reference,
+  SAFE_CAST( MAX(
+      CASE
+        WHEN JSON_EXTRACT(additional_data, "$.model_version") IS NULL THEN JSON_EXTRACT( additional_data, "$.purchase_probability_score" )
+      ELSE
+      NULL
+    END
+      ) AS float64 ) pps_old,
+  SAFE_CAST( MAX(
+      CASE
+        WHEN JSON_EXTRACT(additional_data, "$.model_version") IS NOT NULL AND TIMESTAMP_DIFF(event_ts, reg_ts, hour) <= 1 THEN JSON_EXTRACT( additional_data, "$.purchase_probability_score" )
+      ELSE
+      NULL
+    END
+      ) AS float64 ) pps_new,
+  MAX(gender) gender,
+  STRING_AGG( scammer_status
+  ORDER BY
+    event_ts DESC
+  LIMIT
+    1 ) AS scammer_status_latest,
+  SAFE_CAST( STRING_AGG(
+      CASE
+        WHEN event_type = 'FRAUD_PAYMENT_CLASSIFICATION' THEN REGEXP_REPLACE( JSON_EXTRACT( additional_data, '$.fraud_probability_score' ), '"', '' )
+      ELSE
+      NULL
+    END
+    ORDER BY
+      event_ts DESC
+    LIMIT
+      1 ) AS float64 ) latest_fraud_score,
+  STRING_AGG(
+    CASE
+      WHEN event_type IN ('PROFILE_DELETION', 'ACCOUNT_DELETED', 'PAYMENT_DELETED') THEN 'DEL'
+      WHEN event_type = 'ACCOUNT_DELETION_REQUEST' THEN "P DEL"
+      WHEN event_type IN ( 'CHANGE_MEMBER_STATUS', 'CHANGE_NOTIFICATIONS', 'CHANGE_EMAIL', 'CS_CONTACT', 'PASSWORD_CHANGE' ) THEN member_status
+  END
+  ORDER BY
+    event_ts DESC
+  LIMIT
+    1 ) AS member_status_latest,
+  /*, STRING_AGG(case when event_type in ('PROFILE_DELETION','ACCOUNT_DELETED','PAYMENT_DELETED') then 'DEL'
+  when REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.member_status_change_reason'),'"','')='USER_DEACTIVATION' then 'DEL'
+  when event_type in ('CHANGE_NOTIFICATIONS','ACCOUNT_EXPORTED','CHANGE_EMAIL' ,'ACCOUNT_DELETION_REQUEST' ,'ACCOUNT_EXPORT_REQUESTED'  ,'CANCELLATION_FLOW','CS_CONTACT','PASSWORD_CHANGE') OR  (event_type = "EMAIL_SENT_STATUS" AND REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.emstatus'),'"','') = "ERROR") then member_status
+  -- when event_ts<'2018-04-05 00:00:00' then member_status
+  -- when event_ts>'2019-04-01 00:00:00' then member_status -- fix date TBD
+  when event_ts >= '2018-04-05 00:00:00' and event_ts <= '2019-04-01 00:00:00' and REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.old_member_status'),'"','')<>REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.new_member_status'),'"','')then member_status
+  when event_ts >= '2018-04-05 00:00:00' and event_ts <= '2019-04-01 00:00:00' and REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.member_status_change_reason'),'"','') = 'MAKING_FPM' and scammer_status='SCAMMER' then 'FPM'
+  when event_ts >= '2018-04-05 00:00:00' and event_ts <= '2019-04-01 00:00:00' and REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.member_status_change_reason'),'"','') = 'MAKING_FPM' and brand in ('CDATE','EROVIE') and gender='FEMALE' then 'FPM'
+  when event_ts >= '2018-04-05 00:00:00' and event_ts <= '2019-04-01 00:00:00' and REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.member_status_change_reason'),'"','') in ('MAKING_FPM', 'MAKING_PPM','IOS_FO','PAYMENT_CONFIRMED','PROCESSING_CBR','PROCESSING_FO_ARM','PRODUCT_ACTIVATED_AFTER_REDIRECT','PROLONGING','SUCCESSFUL_RENEWAL_ATTEMPT') then 'PPM'
+  when event_ts >= '2018-04-05 00:00:00' and event_ts <= '2019-04-01 00:00:00' and REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.member_status_change_reason'),'"','') in ('CHARGEBACK_DEACTIVATION_SCHEDULER_EXTCO_DISABLED','DISABLING_REDEBIT_TRIES','INTCO_DEACTIVATION_SCHEDULER_EXTCO_DISABLED','IOS_EXPIRATION') then 'PENDING'
+  when event_ts >= '2018-04-05 00:00:00' and event_ts <= '2019-04-01 00:00:00' and REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.member_status_change_reason'),'"','') in ('CHARGEBACK_DEACTIVATION_SCHEDULER_EXTCO_ENABLED','INTCO_DEACTIVATION_SCHEDULER_EXTCO_ENABLED') then 'EXTCO'
+  when event_ts >= '2018-04-05 00:00:00' and event_ts <= '2019-04-01 00:00:00' and REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.member_status_change_reason'),'"','') in ('IOS_REFUND','PENDING_SERVICE_JOB','ADMIN_TOOL') then 'NPM'
+  when event_ts >= '2018-04-05 00:00:00' and event_ts <= '2019-04-01 00:00:00' and REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.member_status_change_reason'),'"','') in ('FAILED_RENEWAL_ATTEMPT','RE_REGISTRATION','SCHEDULING_REDEBIT') then 'REDEBIT'
+  when event_ts >= '2018-04-05 00:00:00' and event_ts <= '2019-04-01 00:00:00' and REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.member_status_change_reason'),'"','') in ('PSP_DISPUTE_NOTIFICATION') then 'DISPUTED'
+  when event_ts >= '2018-04-05 00:00:00' and event_ts <= '2019-04-01 00:00:00' and REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.member_status_change_reason'),'"','') in ('PRODUCT_ALREADY_DEACTIVATED','PRODUCT_DEACTIVATED') and member_status='REDEBIT' then 'INTCO' -- Most used, not 100% correct
+  when event_ts >= '2018-04-05 00:00:00' and event_ts <= '2019-04-01 00:00:00' and REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.member_status_change_reason'),'"','') in ('PRODUCT_ALREADY_DEACTIVATED','PRODUCT_DEACTIVATED') then 'PENDING' -- Most used, not 100% correct
+  when event_ts >= '2018-04-05 00:00:00' and event_ts <= '2019-04-01 00:00:00' and REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.member_status_change_reason'),'"','') in ('CHARGE_FO_RO_NOTIFICATION') and member_status='PREMIUM' then 'NPM' -- Most used, not 100% correct
+  when event_ts >= '2018-04-05 00:00:00' and event_ts <= '2019-04-01 00:00:00' and REGEXP_REPLACE(JSON_EXTRACT(additional_data,'$.member_status_change_reason'),'"','') in ('CHARGE_FO_RO_NOTIFICATION')  then 'PPM' -- Most used, not 100% correct
+  when event_type = 'CHANGE_MEMBER_STATUS' then member_status
+  -- not all events should be considered for member_status, same logic as in change_events
+  -- else member_status
+  end ORDER BY event_ts DESC LIMIT 1) as member_status_latest*/
+  MAX(
+    CASE
+      WHEN event_type IN ('PROFILE_DELETION', 'ACCOUNT_DELETED', 'PAYMENT_DELETED') THEN event_ts
+    ELSE
+    NULL
+  END
+    ) deactivation_ts,
+  SAFE_CAST( STRING_AGG(
+      CASE
+        WHEN COALESCE( REGEXP_REPLACE( JSON_EXTRACT(additional_data, '$.category'), '"', '' ), REGEXP_REPLACE( JSON_EXTRACT(additional_data, '$.result'), '"', '' ) ) = "newsletter" AND COALESCE( REGEXP_REPLACE( JSON_EXTRACT( additional_data, '$.member_status_change_reason' ), '"', '' ), REGEXP_REPLACE( JSON_EXTRACT(additional_data, '$.type'), '"', '' ) ) = "subscribe" THEN "1"
+        WHEN COALESCE( REGEXP_REPLACE( JSON_EXTRACT(additional_data, '$.category'), '"', '' ), REGEXP_REPLACE( JSON_EXTRACT(additional_data, '$.result'), '"', '' ) ) = "newsletter"
+      AND COALESCE( REGEXP_REPLACE( JSON_EXTRACT( additional_data, '$.member_status_change_reason' ), '"', '' ), REGEXP_REPLACE( JSON_EXTRACT(additional_data, '$.type'), '"', '' ) ) = "unsubscribe" THEN "0"
+      ELSE
+      NULL
+    END
+    ORDER BY
+      event_ts DESC
+    LIMIT
+      1 ) AS int64 ) AS newsletter_allowed,
+  SAFE_CAST( STRING_AGG(
+      CASE
+        WHEN COALESCE( REGEXP_REPLACE( JSON_EXTRACT(additional_data, '$.category'), '"', '' ), REGEXP_REPLACE( JSON_EXTRACT(additional_data, '$.result'), '"', '' ) ) = "notifications" AND COALESCE( REGEXP_REPLACE( JSON_EXTRACT( additional_data, '$.member_status_change_reason' ), '"', '' ), REGEXP_REPLACE( JSON_EXTRACT(additional_data, '$.type'), '"', '' ) ) = "subscribe" THEN "1"
+        WHEN COALESCE( REGEXP_REPLACE( JSON_EXTRACT(additional_data, '$.category'), '"', '' ), REGEXP_REPLACE( JSON_EXTRACT(additional_data, '$.result'), '"', '' ) ) = "notifications"
+      AND COALESCE( REGEXP_REPLACE( JSON_EXTRACT( additional_data, '$.member_status_change_reason' ), '"', '' ), REGEXP_REPLACE( JSON_EXTRACT(additional_data, '$.type'), '"', '' ) ) = "unsubscribe" THEN "0"
+      ELSE
+      NULL
+    END
+    ORDER BY
+      event_ts DESC
+    LIMIT
+      1 ) AS int64 ) AS notification_allowed,
+  STRING_AGG( REGEXP_REPLACE(JSON_EXTRACT(additional_data, '$.emaildomain'), '"', '')
+  ORDER BY
+    event_ts DESC
+  LIMIT
+    1 ) AS email_domain_latest,
+  MAX(
+    CASE
+      WHEN event_type = "EMAIL_SENT_STATUS" AND REGEXP_REPLACE( JSON_EXTRACT(additional_data, '$.emstatuscodes'), '"', '' ) LIKE "-%" THEN 1
+    ELSE
+    NULL
+  END
+    ) hard_bounce,
+  SAFE_CAST( STRING_AGG( SAFE_CAST( JSON_EXTRACT(additional_data, '$.scammer_score') AS string )
+    ORDER BY
+      event_ts DESC
+    LIMIT
+      1 ) AS float64 ) AS scammer_score,
+  MAX( TIMESTAMP_TRUNC( TIMESTAMP(SAFE_CAST(email_confirm_ts AS string)), second ) ) mailc_ts,
+  MAX(
+    CASE
+      WHEN event_type = "REG_COMPLETED" THEN CASE
+      WHEN ua_type = 'Mobile Hybrid Browser' THEN 'App'
+      WHEN ua_class = 'MOBILE_NATIVE' THEN 'App'
+      WHEN ua_os = 'Android' THEN 'Mobile'
+      WHEN ua_os = 'iOS' THEN 'Mobile'
+      WHEN ua_os = 'OS X' THEN 'Desktop'
+      WHEN ua_os = 'Mac OS' THEN 'Desktop'
+      WHEN ua_type = 'Mobile Browser' THEN 'Mobile'
+      WHEN ua_os = 'Windows' THEN 'Desktop'
+      WHEN ua_type = 'Browser' THEN 'Desktop'
+      WHEN ua_class = 'CLASSIC' THEN 'Desktop'
+      WHEN ua_class = 'MOBILE_WEB' THEN 'Mobile'
+    ELSE
+    'Desktop'
+  END
+    ELSE
+    NULL
+  END
+    ) AS reg_agent,
+  MAX(
+    CASE
+      WHEN event_type = "REG_COMPLETED" THEN CASE
+      WHEN ua_os = 'Android' THEN 'Android'
+      WHEN ua_os = 'iOS' THEN 'iOS'
+      WHEN ua_os = 'Windows' THEN 'Windows'
+      WHEN ua_os = 'OS X' THEN 'OS X'
+      WHEN ua_os = 'Mac OS' THEN 'OS X'
+    ELSE
+    'Other'
+  END
+    ELSE
+    NULL
+  END
+    ) AS reg_os,
+  MAX(
+    CASE
+      WHEN event_type = "REG_COMPLETED" THEN DATE(birthday)
+    ELSE
+    NULL
+  END
+    ) birthday,
+  MAX(
+    CASE
+      WHEN event_type = "REG_COMPLETED" THEN SAFE_CAST( FLOOR( TIMESTAMP_DIFF( TIMESTAMP(SAFE_CAST(reg_ts AS string)), TIMESTAMP(SAFE_CAST(birthday AS string)), day ) / 365 ) AS int64 )
+    ELSE
+    NULL
+  END
+    ) age,
+  MAX(
+    CASE
+      WHEN event_type = "REG_COMPLETED" THEN CASE
+      WHEN ( TIMESTAMP_DIFF( TIMESTAMP(SAFE_CAST(reg_ts AS string)), TIMESTAMP(SAFE_CAST(birthday AS string)), day ) / 365 ) < 30 THEN '18-29'
+      WHEN ( TIMESTAMP_DIFF( TIMESTAMP(SAFE_CAST(reg_ts AS string)), TIMESTAMP(SAFE_CAST(birthday AS string)), day ) / 365 ) < 40 THEN '30-39'
+      WHEN ( TIMESTAMP_DIFF( TIMESTAMP(SAFE_CAST(reg_ts AS string)), TIMESTAMP(SAFE_CAST(birthday AS string)), day ) / 365 ) < 50 THEN '40-49'
+      WHEN ( TIMESTAMP_DIFF( TIMESTAMP(SAFE_CAST(reg_ts AS string)), TIMESTAMP(SAFE_CAST(birthday AS string)), day ) / 365 ) < 60 THEN '50-59'
+    ELSE
+    '60+'
+  END
+    ELSE
+    NULL
+  END
+    ) age_cluster,
+  MAX( REGEXP_REPLACE( JSON_EXTRACT(additional_data, '$.user_reference'), '"', '' ) ) AS reg_token,
+  MAX(geo_data) AS geo_data,
+  MAX(
+    CASE
+      WHEN event_type = "REG_COMPLETED" THEN TRIM(JSON_EXTRACT(additional_data, '$.ip_asn'), '"')
+    ELSE
+    NULL
+  END
+    ) AS ip_asn_reg,
+  MAX(
+    CASE
+      WHEN event_type = "REG_COMPLETED" THEN TRIM(JSON_EXTRACT(additional_data, '$.ip_aso'), '"')
+    ELSE
+    NULL
+  END
+    ) AS ip_aso_reg,
+  MAX(
+    CASE
+      WHEN event_type = "REG_COMPLETED" THEN ip_country
+    ELSE
+    NULL
+  END
+    ) AS ip_country_reg,
+  MAX(CASE
+      WHEN event_type = "REG_COMPLETED" THEN ua
+    ELSE
+    NULL
+  END
+    ) AS ua_reg,
+  MAX(
+    CASE
+      WHEN event_type = "PAYMENT_FO_SUCCESS" THEN TRIM(JSON_EXTRACT(additional_data, '$.ip_asn'), '"')
+    ELSE
+    NULL
+  END
+    ) AS ip_asn_fo,
+  MAX(
+    CASE
+      WHEN event_type = "PAYMENT_FO_SUCCESS" THEN TRIM(JSON_EXTRACT(additional_data, '$.ip_aso'), '"')
+    ELSE
+    NULL
+  END
+    ) AS ip_aso_fo,
+  MAX(
+    CASE
+      WHEN event_type = "PAYMENT_FO_SUCCESS" THEN TRIM(JSON_EXTRACT(additional_data, '$.deviceid'), '"')
+    ELSE
+    NULL
+  END
+    ) AS deviceid_fo,
+  MAX(
+    CASE
+      WHEN event_type = "PAYMENT_FO_SUCCESS" THEN ip_country
+    ELSE
+    NULL
+  END
+    ) AS ip_country_fo,
+  MAX(
+    CASE
+      WHEN event_type = "PAYMENT_FO_SUCCESS" THEN ua
+    ELSE
+    NULL
+  END
+    ) AS ua_fo,
+  MAX(
+    CASE
+      WHEN event_type = "PAYMENT_FO_SUCCESS" THEN CASE
+      WHEN ua_type = 'Mobile Hybrid Browser' THEN 'App'
+      WHEN ua_class = 'MOBILE_NATIVE' THEN 'App'
+      WHEN ua_os = 'Android' THEN 'Mobile'
+      WHEN ua_os = 'iOS' THEN 'Mobile'
+      WHEN ua_os = 'OS X' THEN 'Desktop'
+      WHEN ua_os = 'Mac OS' THEN 'Desktop'
+      WHEN ua_type = 'Mobile Browser' THEN 'Mobile'
+      WHEN ua_os = 'Windows' THEN 'Desktop'
+      WHEN ua_type = 'Browser' THEN 'Desktop'
+      WHEN ua_class = 'CLASSIC' THEN 'Desktop'
+      WHEN ua_class = 'MOBILE_WEB' THEN 'Mobile'
+    ELSE
+    'Desktop'
+  END
+    ELSE
+    NULL
+  END
+    ) AS pay_user_agent,
+  MAX(
+    CASE
+      WHEN event_type = "PAYMENT_FO_SUCCESS" THEN CASE
+      WHEN ua_os = 'Android' THEN 'Android'
+      WHEN ua_os = 'iOS' THEN 'iOS'
+      WHEN ua_os = 'Windows' THEN 'Windows'
+      WHEN ua_os = 'OS X' THEN 'OS X'
+      WHEN ua_os = 'Mac OS' THEN 'OS X'
+    ELSE
+    'Other'
+  END
+    ELSE
+    NULL
+  END
+    ) AS pay_os,
+  MAX(
+    CASE
+      WHEN event_type IN ('LOGIN', 'REG_COMPLETED') THEN TIMESTAMP_TRUNC(event_ts, second)
+    ELSE
+    NULL
+  END
     ) last_login_ts,
-    max(coalesce(ud.pic_upload, ou.pic_upload, 0)) pic_upload,
-    max(
-        coalesce(ud.reg_agent, ou.reg_device, u.registrationagent, 'Desktop')
-    ) reg_device,  # do we want in first place consider userdiary? Also mapping?
-    max(coalesce(ud.reg_os, ou.reg_os, u.registrationos, 'Other')) reg_os,  # do we want in first place consider userdiary? Also mapping?
-    max(coalesce(ud.ua_reg, ou.reg_ua)) reg_ua,
-    max(coalesce(ud.pay_user_agent, ou.pay_device)) pay_device,
-    max(coalesce(ud.pay_os, ou.pay_os)) pay_os,
-    max(coalesce(ud.ua_fo, ou.pay_ua)) pay_ua,
-    max(
-        coalesce(ud.user_agent_latest, ou.last_device, ou.reg_device, "Desktop")
-    ) last_device,
-    max(coalesce(ud.ua_latest, ou.last_ua)) last_ua,
-    coalesce(
-        max(ud.pps_new),
-        safe_cast(
-            string_agg(
-                safe_cast(u.purchaseprobabilityscore as string)
-                order by u.lastupdated desc
-                limit 1
-            ) as float64
-        ),
-        max(ou.purchase_probability_score),
-        max(ud.pps_old),
-        max(ud.pps)
-    ) purchase_probability_score,
-    max(coalesce(ud.scammer_score, ou.scammer_score)) scammer_score,
-    max(coalesce(ud.latest_fraud_score, ou.fraud_score_latest)) fraud_score_latest,
-    coalesce(
-        max(ou.reg_ip_country_code),
-        max(utr.country_code),
-        string_agg(u.registrationipcountry order by u.lastupdated asc limit 1)
-    ) reg_ip_country_code,
-    max(coalesce(ud.ip_country_reg, ou.reg_ip_country)) reg_ip_country,
-    max(coalesce(ud.ip_country_fo, ou.pay_ip_country)) pay_ip_country,
-    max(coalesce(ud.ip_country_latest, ou.last_ip_country)) last_ip_country,
-    max(coalesce(ud.deviceid_reg, ou.reg_device_id)) reg_device_id,
-    max(coalesce(ud.deviceid_fo, ou.pay_device_id)) pay_device_id,
-    max(coalesce(ud.deviceid_latest, ou.last_device_id)) last_device_id,
-    max(coalesce(ud.ip_asn_reg, ou.reg_ip_asn)) reg_ip_asn,
-    max(coalesce(ud.ip_asn_fo, ou.pay_ip_asn)) pay_ip_asn,
-    max(coalesce(ud.ip_asn_latest, ou.last_ip_asn)) last_ip_asn,
-    max(coalesce(ud.ip_aso_reg, ou.reg_ip_aso)) reg_ip_aso,
-    max(coalesce(ud.ip_aso_fo, ou.pay_ip_aso)) pay_ip_aso,
-    max(coalesce(ud.ip_aso_latest, ou.last_ip_aso)) last_ip_aso,
-    max(
-        coalesce(utr.ip, u.registrationip, ou.reg_ip_address_encrypted, ud.ip_address)
-    ) reg_ip_address_encrypted,
-    max(coalesce(ud.pay_ab_test_id, ou.pay_ab_test_id)) pay_ab_test_id,
-    max(coalesce(o.pay_first_order_ts, ou.pay_first_order_ts)) pay_first_order_ts,
-    max(coalesce(o.pay_last_order_ts, ou.pay_last_order_ts)) pay_last_order_ts,
-    min(coalesce(o.pay_first_ls_ts, ou.pay_first_ls_ts)) pay_first_ls_ts,
-    timestamp_trunc(
-        min(coalesce(u.firstpp1visittime, ou.pay_first_pp1_ts)), second
-    ) pay_first_pp1_ts,
-    coalesce(
-        max(ud.notification_allowed),
-        case
-            when
-                string_agg(
-                    safe_cast(u.notificationallowed as string)
-                    order by u.lastupdated desc
-                    limit 1
-                )
-                = "true"
-            then 1
-        end,
-        max(ou.crm_nf_allowed)
-    ) crm_nf_allowed,
-    timestamp_trunc(
-        max(
-            coalesce(
-                case
-                    when u.notificationallowed = false
-                    then notificationallowedchangetime
-                    else null
-                end,
-                ou.crm_nf_unsubscribe_ts
-            )
-        ),
-        second
-    ) crm_nf_unsubscribe_ts,
-    coalesce(
-        max(ud.newsletter_allowed),
-        case
-            when
-                string_agg(
-                    safe_cast(u.newsletterallowed as string)
-                    order by u.lastupdated desc
-                    limit 1
-                )
-                = "true"
-            then 1
-        end,
-        case
-            when
-                string_agg(
-                    safe_cast(u.notificationallowed as string)
-                    order by u.lastupdated desc
-                    limit 1
-                )
-                = "true"
-            then 1
-        end,
-        max(ou.crm_lc_allowed)
-    ) crm_lc_allowed,
-    timestamp_trunc(
-        max(
-            coalesce(
-                case
-                    when u.newsletterallowed = false
-                    then newsletterallowedchangetime
-                    else null
-                end,
-                ou.crm_lc_unsubscribe_ts
-            )
-        ),
-        second
-    ) crm_lc_unsubscribe_ts,
-    max(coalesce(ou.crm_login_first, ud.first_crm_login)) crm_login_first,  # # if already value in ods_user, then no update
-    max(coalesce(ou.crm_message_first, ud.first_crm_message)) crm_message_first,  # # if already value in ods_user, then no update
-    max(coalesce(ud.hard_bounce, ou.crm_hard_bounce, 0)) crm_hard_bounce,
-    coalesce(
-        max(ud.reg_reference),
-        max(ou.reg_reference),
-        string_agg(u.reference order by u.lastupdated asc limit 1)
-    ) reg_reference,
-    max(coalesce(ud.geo_data, ou.geo_data)) geo_data,
-    max(coalesce(ud.crossreg_userid, ou.crossreg_user_id)) crossreg_user_id,
-    max(coalesce(ud.reg_ab_test_id, ou.reg_ab_test_id)) reg_ab_test_id,
-    max(
-        coalesce(
-            ud.time_to_reg_completion_ms,
-            safe_cast(u.timetocompleteregistration as int64),
-            ou.time_to_reg_ms
-        )
-    ) time_to_reg_ms,
-    max(coalesce(ud.pp1_visit_1h, ou.pp1_visit_1h)) pp1_visit_1h,
-    max(coalesce(ud.pp2_visit_1h, ou.pp2_visit_1h)) pp2_visit_1h,
-    max(coalesce(ud.pic_upload_1h, ou.pic_upload_1h)) pic_upload_1h,
-    max(coalesce(ud.prof_delete_1h, ou.profile_delete_1h)) profile_delete_1h,
-    max(coalesce(ud.instant_matches_1h, ou.instant_matches_1h)) instant_matches_1h,
-    max(coalesce(ud.search_update_1h, ou.search_update_1h)) search_update_1h,
-    max(coalesce(ud.profile_update_1h, ou.profile_update_1h)) profile_update_1h,
-    max(coalesce(ud.profile_view_1h, ou.profile_view_1h)) profile_view_1h,
-    max(coalesce(ud.freetext_sent_1h, ou.freetext_sent_1h)) freetext_sent_1h,
-    max(coalesce(ud.fo_attempt_1h, ou.fo_try_1h)) fo_try_1h,
-    max(coalesce(ud.app_install_ts_1h, ou.app_install_1h_ts)) app_install_1h_ts,
-    # profile
-    coalesce(
-        string_agg(
-            safe_cast(u.eyescolor1 as string) order by u.lastupdated desc limit 1
-        ),
-        max(ou.eye_color)
-    ) eye_color,
-    coalesce(
-        string_agg(
-            safe_cast(u.hairlength1 as string) order by u.lastupdated desc limit 1
-        ),
-        max(ou.hair_length)
-    ) hair_length,
-    coalesce(
-        string_agg(
-            safe_cast(u.haircolor1 as string) order by u.lastupdated desc limit 1
-        ),
-        max(ou.hair_color)
-    ) hair_color,
-    coalesce(
-        string_agg(safe_cast(u.shape1 as string) order by u.lastupdated desc limit 1),
-        max(ou.shape)
-    ) shape,
-    coalesce(
-        string_agg(safe_cast(u.size1 as string) order by u.lastupdated desc limit 1),
-        max(ou.size)
-    ) size,
-    coalesce(
-        string_agg(safe_cast(u.bodyart as string) order by u.lastupdated desc limit 1),
-        max(ou.bodyart)
-    ) bodyart,
-    coalesce(
-        string_agg(
-            safe_cast(u.drinkinghabits as string) order by u.lastupdated desc limit 1
-        ),
-        max(ou.drinking_habits)
-    ) drinking_habits,
-    coalesce(
-        string_agg(
-            safe_cast(u.smokinghabits as string) order by u.lastupdated desc limit 1
-        ),
-        max(ou.smoking_habits)
-    ) smoking_habits,
-    coalesce(
-        string_agg(
-            safe_cast(u.familystatus1 as string) order by u.lastupdated desc limit 1
-        ),
-        max(ou.family_status)
-    ) family_status,
-    coalesce(
-        string_agg(
-            safe_cast(u.education as string) order by u.lastupdated desc limit 1
-        ),
-        max(ou.education)
-    ) education,
-    coalesce(
-        string_agg(
-            safe_cast(u.professionalfield as string) order by u.lastupdated desc limit 1
-        ),
-        max(ou.profession)
-    ) profession,
-    coalesce(
-        string_agg(safe_cast(u.wells as string) order by u.lastupdated desc limit 1),
-        max(ou.wells)
-    ) wells,
-    coalesce(
-        string_agg(safe_cast(u.prouds as string) order by u.lastupdated desc limit 1),
-        max(ou.prouds)
-    ) prouds,
-    max(coalesce(tr.trait_10033_values, ou.traits_income)) as traits_income,
-    max(coalesce(tr.trait_10035_values, ou.traits_children)) as traits_children,
-    max(coalesce(tr.trait_10034_values, ou.traits_religion)) as traits_religion,
-    max(
-        coalesce(st.trait_10033_values, ou.search_traits_income)
-    ) as search_traits_income,
-    max(
-        coalesce(st.trait_10035_values, ou.search_traits_children)
-    ) as search_traits_children,
-    max(
-        coalesce(st.trait_10034_values, ou.search_traits_religion)
-    ) as search_traits_religion,
-    max(
-        coalesce(st.trait_17_values, ou.search_traits_drinking)
-    ) as search_traits_drinking,
-    max(coalesce(st.trait_18_values, ou.search_traits_smoking)) as search_traits_smoking
+  MIN(
+    CASE
+      WHEN REGEXP_REPLACE(JSON_EXTRACT(additional_data, '$.type'), '"', '') = "crm" OR ( event_type = 'LOGIN' AND JSON_EXTRACT(additional_data, '$.source') LIKE '%:NF:%' ) OR ( event_type = 'LOGIN' AND JSON_EXTRACT(additional_data, '$.source') LIKE '%:CP:%' ) OR ( event_type = 'LOGIN' AND JSON_EXTRACT(additional_data, '$.source') LIKE '%:LC:%' ) OR ( event_type = 'LOGIN' AND JSON_EXTRACT(additional_data, '$.source') LIKE '%:LC-%' ) THEN TIMESTAMP_TRUNC(event_ts, second)
+    ELSE
+    NULL
+  END
+    ) first_crm_login,
+  STRING_AGG(
+    CASE
+      WHEN REGEXP_REPLACE(JSON_EXTRACT(additional_data, '$.type'), '"', '') = "crm" OR ( event_type = 'LOGIN' AND JSON_EXTRACT(additional_data, '$.source') LIKE '%:NF:%' ) OR ( event_type = 'LOGIN' AND JSON_EXTRACT(additional_data, '$.source') LIKE '%:CP:%' ) OR ( event_type = 'LOGIN' AND JSON_EXTRACT(additional_data, '$.source') LIKE '%:LC:%' ) OR ( event_type = 'LOGIN' AND JSON_EXTRACT(additional_data, '$.source') LIKE '%:LC-%' ) THEN IFNULL( REGEXP_REPLACE( JSON_EXTRACT(additional_data, '$.source'), '"', '' ), CASE
+        WHEN event_type = 'REG_COMPLETED' THEN 'RegComp'
+    END
+      )
+    ELSE
+    NULL
+  END
+  ORDER BY
+    event_ts ASC
+  LIMIT
+    1 ) AS first_crm_message,
+  STRING_AGG(
+    CASE
+      WHEN event_type = "REG_COMPLETED" THEN CASE
+      WHEN ua_type = 'Mobile Hybrid Browser' THEN 'App'
+      WHEN ua_class = 'MOBILE_NATIVE' THEN 'App'
+      WHEN ua_os = 'Android' THEN 'Mobile'
+      WHEN ua_os = 'iOS' THEN 'Mobile'
+      WHEN ua_os = 'OS X' THEN 'Desktop'
+      WHEN ua_os = 'Mac OS' THEN 'Desktop'
+      WHEN ua_type = 'Mobile Browser' THEN 'Mobile'
+      WHEN ua_os = 'Windows' THEN 'Desktop'
+      WHEN ua_type = 'Browser' THEN 'Desktop'
+      WHEN ua_class = 'CLASSIC' THEN 'Desktop'
+      WHEN ua_class = 'MOBILE_WEB' THEN 'Mobile'
+    ELSE
+    'Desktop'
+  END
+    ELSE
+    NULL
+  END
+  ORDER BY
+    event_ts DESC
+  LIMIT
+    1 ) AS user_agent_latest,
+  STRING_AGG(
+    CASE
+      WHEN REGEXP_REPLACE( JSON_EXTRACT(additional_data, '$.source'), '"', '' ) = "reg" THEN TRIM(JSON_EXTRACT(additional_data, '$.deviceid'), '"')
+    ELSE
+    NULL
+  END
+  ORDER BY
+    event_ts DESC
+  LIMIT
+    1 ) AS deviceid_reg,
+  STRING_AGG( TRIM(JSON_EXTRACT(additional_data, '$.ip_asn'), '"')
+  ORDER BY
+    event_ts DESC
+  LIMIT
+    1 ) AS ip_asn_latest,
+  STRING_AGG( TRIM(JSON_EXTRACT(additional_data, '$.ip_aso'), '"')
+  ORDER BY
+    event_ts DESC
+  LIMIT
+    1 ) AS ip_aso_latest,
+  STRING_AGG( TRIM(JSON_EXTRACT(additional_data, '$.deviceid'), '"')
+  ORDER BY
+    event_ts DESC
+  LIMIT
+    1 ) AS deviceid_latest,
+  STRING_AGG(ip_country
+  ORDER BY
+    event_ts DESC
+  LIMIT
+    1) AS ip_country_latest,
+  STRING_AGG(ua
+  ORDER BY
+    event_ts DESC
+  LIMIT
+    1) AS ua_latest,
+  STRING_AGG( TRIM(JSON_EXTRACT(additional_data, '$.ip_org'), '"')
+  ORDER BY
+    event_ts DESC
+  LIMIT
+    1 ) AS ip_org_latest,
+  STRING_AGG(
+    CASE
+      WHEN event_type = "REG_COMPLETED" THEN CASE
+      WHEN ua_type = 'Mobile Hybrid Browser' THEN 'App'
+      WHEN ua_class = 'MOBILE_NATIVE' THEN 'App'
+      WHEN ua_os = 'Android' THEN 'Mobile'
+      WHEN ua_os = 'iOS' THEN 'Mobile'
+      WHEN ua_os = 'OS X' THEN 'Desktop'
+      WHEN ua_os = 'Mac OS' THEN 'Desktop'
+      WHEN ua_type = 'Mobile Browser' THEN 'Mobile'
+      WHEN ua_os = 'Windows' THEN 'Desktop'
+      WHEN ua_type = 'Browser' THEN 'Desktop'
+      WHEN ua_class = 'CLASSIC' THEN 'Desktop'
+      WHEN ua_class = 'MOBILE_WEB' THEN 'Mobile'
+    ELSE
+    'Desktop'
+  END
+    ELSE
+    NULL
+  END
+  ORDER BY
+    event_ts ASC
+  LIMIT
+    1 ) AS user_agent_first,
+  STRING_AGG(
+    CASE
+      WHEN event_type = "PAYMENT_FO_SUCCESS" THEN CASE
+      WHEN ua_os = 'Android' THEN 'Android'
+      WHEN ua_os = 'iOS' THEN 'iOS'
+      WHEN ua_os = 'Windows' THEN 'Windows'
+      WHEN ua_os = 'OS X' THEN 'OS X'
+      WHEN ua_os = 'Mac OS' THEN 'OS X'
+    ELSE
+    'Other'
+  END
+    ELSE
+    NULL
+  END
+  ORDER BY
+    event_ts ASC
+  LIMIT
+    1 ) AS user_os_first,
+  MAX(
+    CASE
+      WHEN event_type = 'PICTURE_UPLOAD' THEN 1
+    ELSE
+    NULL
+  END
+    ) pic_upload,
+  CASE
+    WHEN ARRAY_LENGTH( REGEXP_EXTRACT_ALL( STRING_AGG( TRIM( JSON_EXTRACT( additional_data, '$.changed_profile_properties.birthday' ), '"' ) ORDER BY event_ts DESC LIMIT 1 ), "," ) ) = 2 THEN DATE( PARSE_DATETIME( "%h %e, %Y, %I:%S:%M %p", STRING_AGG( TRIM( JSON_EXTRACT( additional_data, '$.changed_profile_properties.birthday' ), '"' ) ORDER BY event_ts DESC LIMIT 1 ) ) )
+  ELSE
+  DATE( PARSE_DATETIME( "%h %e, %Y %I:%S:%M %p", STRING_AGG( TRIM( JSON_EXTRACT( additional_data, '$.changed_profile_properties.birthday' ), '"' )
+      ORDER BY
+        event_ts DESC
+      LIMIT
+        1 ) ) )
+END
+  AS birthday_latest,
+  MIN(
+    CASE
+      WHEN event_type = 'PAYMENT_FO_SUCCESS' THEN TIMESTAMP_TRUNC(event_ts, second)
+  END
+    ) first_order_ts,
+  MAX(
+    CASE
+      WHEN event_type = 'PAYMENT_FO_SUCCESS' THEN TIMESTAMP_TRUNC(event_ts, second)
+  END
+    ) latest_order_ts,
+  MIN(
+    CASE
+      WHEN event_type = 'ACCOUNT_DELETION_REQUEST' THEN TIMESTAMP_TRUNC(event_ts, second)
+  END
+    ) deletion_request_ts,
+  MAX( SAFE_CAST( (
+        CASE
+          WHEN event_type = 'REG_COMPLETED' THEN TRIM( JSON_EXTRACT(additional_data, '$.cdn_bot_score'), '"' )
+      END
+        ) AS int64 ) ) AS bot_score,
+  MAX(
+    CASE
+      WHEN event_type = 'PURCHASE_PROBABILITY_CLASSIFICATION' THEN SAFE_CAST( JSON_EXTRACT(additional_data, '$.noLS.prob') AS float64 )
+  END
+    ) AS nols_prob,
+  MAX(
+    CASE
+      WHEN event_type = 'PPS_REG_CLASSIFICATION' THEN SAFE_CAST( JSON_EXTRACT( additional_data, '$.purchase_probability_score' ) AS float64 )
+  END
+    ) AS reg_purchase_probability_score,
+  MAX(
+    CASE
+      WHEN event_type = 'PPS_REG_CLASSIFICATION' THEN SAFE_CAST( JSON_EXTRACT(additional_data, '$.mailC.score') AS float64 )
+  END
+    ) AS reg_mailc_probability_score,
+  MAX(
+    CASE
+      WHEN event_type = 'REG_COMPLETED' THEN additional_data
+  END
+    ) AS reg_additional_data,
+  MAX(tracking_code) AS tracking_code
+FROM
+  ${ref("userdiary_all")}
+WHERE
+  DATE(event_ts) >= (
+  SELECT
+    start_date
+  FROM
+    date_range) #
+  AND DATE(event_ts) < (
+  SELECT
+    end_date
+  FROM
+    date_range)
+GROUP BY
+  user_id ),
+  user_base AS (
+  SELECT
+    user_id
+  FROM (
+    SELECT
+      id user_id
+    FROM
+      ${ref("userProfile")}
+    WHERE
+      DATE(lastupdated) >= (
+      SELECT
+        start_date
+      FROM
+        date_range)
+      AND id IS NOT NULL
+    UNION ALL
+    SELECT
+      user_id
+    FROM
+      ${self()}
+    WHERE
+      user_id IS NOT NULL
+    UNION ALL
+    SELECT
+      user_id
+    FROM
+      ud
+    WHERE
+      user_id IS NOT NULL )
+  GROUP BY
+    user_id )
+SELECT
+  ub.user_id user_id,
+  MAX(COALESCE(u.usercontactid, ou.contact_id, ud.contact_id)) contact_id,
+  MAX(COALESCE(ud.reg_token, ou.reg_token, r.regtoken)) reg_token,
+  TIMESTAMP_TRUNC(MIN(COALESCE(ou.reg_ts, u.registered, ud.reg_ts)), second) reg_ts,
+  MIN(
+    CASE
+      WHEN DATE(COALESCE(ou.reg_ts, u.registered, ud.reg_ts)) < "2018-01-01" THEN DATE_TRUNC(DATE(COALESCE(ou.reg_ts, u.registered, ud.reg_ts)), month)
+    ELSE
+    DATE(COALESCE(ou.reg_ts, u.registered, ud.reg_ts))
+  END
+    ) reg_partition,
+  TIMESTAMP_TRUNC( MAX( COALESCE(
+        CASE
+          WHEN EXTRACT(year FROM ud.mailc_ts) = 1970 THEN NULL
+        ELSE
+        ud.mailc_ts
+      END
+        ,
+        CASE
+          WHEN EXTRACT(year FROM ou.mailc_ts) = 1970 THEN NULL
+        ELSE
+        ou.mailc_ts
+      END
+        ,
+        CASE
+          WHEN EXTRACT(year FROM u.emailconftime) = 1970 THEN NULL
+        ELSE
+        u.emailconftime
+      END
+        ) ), second ) mailc_ts,
+  MAX( COALESCE(
+      CASE
+        WHEN ub.user_id IN (64057739, 252329351, 252329389, 252329181) THEN 1
+      ELSE
+      NULL
+    END
+      ,
+      CASE
+        WHEN ou.test_user = 0 THEN NULL
+      ELSE
+      ou.test_user
+    END
+      ,
+      CASE
+        WHEN REGEXP_CONTAINS(u.emaildomain, r'(fc4cd|btestu|insparx|paluem)') = TRUE THEN 1
+    END
+      ,
+      CASE
+        WHEN REGEXP_CONTAINS(ud.email_domain, r'(fc4cd|btestu|insparx|paluem)') = TRUE THEN 1
+    END
+      , 0 ) ) test_user,
+  MAX(COALESCE(u.language, ou.branch, ud.branch)) branch,
+  MAX(COALESCE(u.gender, ud.gender, ou.gender, "MALE")) gender,
+  COALESCE( STRING_AGG( SAFE_CAST(u.searchgender AS string)
+    ORDER BY
+      u.lastupdated DESC
+    LIMIT
+      1 ), MAX(ou.search_gender), MAX(ud.search_gender) ) search_gender,
+  COALESCE( MAX(ou.birthday), SAFE_CAST( STRING_AGG( FORMAT("%t", DATE(u.birthday1))
+      ORDER BY
+        u.lastupdated ASC
+      LIMIT
+        1 ) AS date ), MAX(ud.birthday) ) birthday,
+  # this will be the reg value COALESCE( MAX(ou.age), SAFE_CAST( FLOOR( DATE_DIFF( MAX(DATE(u.registered)), SAFE_CAST( STRING_AGG( FORMAT("%t", DATE(u.birthday1))
+ORDER BY
+  u.lastupdated ASC
+LIMIT
+  1 ) AS date ), day ) / 365 ) AS int64 ), MAX(ud.age) ) AS age,
+  COALESCE( MAX(ou.age_group),
+    CASE
+      WHEN ( DATE_DIFF( MAX(DATE(u.registered)), SAFE_CAST( STRING_AGG( FORMAT("%t", DATE(u.birthday1)) ORDER BY u.lastupdated ASC LIMIT 1 ) AS date ), day ) / 365 ) < 30 THEN '18-29'
+      WHEN ( DATE_DIFF( MAX(DATE(u.registered)), SAFE_CAST( STRING_AGG( FORMAT("%t", DATE(u.birthday1))
+          ORDER BY
+            u.lastupdated ASC
+          LIMIT
+            1 ) AS date ), day ) / 365 ) < 40 THEN '30-39'
+      WHEN ( DATE_DIFF( MAX(DATE(u.registered)), SAFE_CAST( STRING_AGG( FORMAT("%t", DATE(u.birthday1)) ORDER BY u.lastupdated ASC LIMIT 1 ) AS date ), day ) / 365 ) < 50 THEN '40-49'
+      WHEN ( DATE_DIFF( MAX(DATE(u.registered)), SAFE_CAST( STRING_AGG( FORMAT("%t", DATE(u.birthday1))
+          ORDER BY
+            u.lastupdated ASC
+          LIMIT
+            1 ) AS date ), day ) / 365 ) < 60 THEN '50-59'
+    ELSE
+    '60+'
+  END
+    , MAX(ud.age_cluster) ) AS age_group,
+  COALESCE( MAX(ud.birthday_latest), SAFE_CAST( STRING_AGG( FORMAT("%t", DATE(u.birthday1))
+      ORDER BY
+        u.lastupdated DESC
+      LIMIT
+        1 ) AS date ), MAX(ou.birthday) ) birthday_latest,
+  MAX( COALESCE(ud.scammer_status_latest, ou.scammer_status_latest, "NOSCAMMER") ) scammer_status_latest,
+  #
+FROM
+  userdiary COALESCE( STRING_AGG(u.scammerstatus
+    ORDER BY
+      u.lastupdated DESC
+    LIMIT
+      1), MAX(ou.scammer_status_admintool) ) scammer_status_admintool,
+  # are the NULLS NOSCAMMER? Value IS called different than IN CURRENT reporting #,
+  MAX(COALESCE(CASE
+        WHEN ou.member_status_latest = 'DEL' THEN # ou.member_status_latest
+    END
+      , ud. member_status_latest, ou. member_status_latest, # "NPM") ) member_status_latest MAX(
+      CASE
+        WHEN COALESCE(ud.member_status_latest, ou.member_status_latest) = "DEL" THEN "DEL"
+        WHEN COALESCE(ud.deletion_request_ts, ou.deletion_request_ts) IS NOT NULL
+      AND COALESCE(ud.deactivation_ts, ou.deactivation_ts) IS NULL THEN "P DEL"
+        WHEN COALESCE(ud.member_status_latest, ou.member_status_latest) = "NPM" AND COALESCE(u.status, ou.member_status_admintool) = "MEMBER" THEN "NPM"
+        WHEN COALESCE(ud.member_status_latest, ou.member_status_latest) IN ("FPM",
+        "PPM")
+      AND COALESCE(u.status, ou.member_status_admintool) = "PREMIUM" THEN COALESCE(ud.member_status_latest, ou.member_status_latest)
+        WHEN COALESCE(ud.member_status_latest, ou.member_status_latest) = "PPM" AND COALESCE(u.status, ou.member_status_admintool) = "MEMBER" THEN "NPM"
+        WHEN COALESCE(u.language, ou.branch, ud.branch) LIKE "%US%"
+      OR COALESCE(u.language, ou.branch, ud.branch) LIKE "%CA%"
+      AND COALESCE(u.status, ou.member_status_admintool) = "PREMIUM" THEN "FPM"
+        WHEN COALESCE(u.status, ou.member_status_admintool) = "MEMBER" THEN "NPM"
+        WHEN COALESCE(u.status, ou.member_status_admintool) = "PREMIUM"
+      AND COALESCE(u.gender, ud.gender, ou.gender, "MALE") = "FEMALE"
+      AND COALESCE(ou.search_gender, ud.search_gender) = "MALE"
+      AND COALESCE(u.language, ou.branch, ud.branch) NOT LIKE "%-%" THEN "FPM"
+        WHEN COALESCE(u.status, ou.member_status_admintool) = "PREMIUM" THEN "PPM"
+        WHEN COALESCE(u.status, ou.member_status_admintool) IS NULL THEN COALESCE(ud.member_status_latest, ou.member_status_latest)
+      ELSE
+      COALESCE(u.status, ou.member_status_admintool, "NPM")
+    END
+      ) member_status_latest,
+    COALESCE( STRING_AGG(u.status
+      ORDER BY
+        u.lastupdated DESC
+      LIMIT
+        1), MAX(ou.member_status_admintool) ) member_status_admintool,
+    # this needs TO be named something different since we use FPM/NPM/PPM etc everywhere MAX(COALESCE(ud.deactivation_ts, ou.deactivation_ts)) deactivation_ts,
+    # needs TO be
+  FROM
+    userdiary COALESCE( MAX(ou.email_domain), STRING_AGG(u.emaildomain
+      ORDER BY
+        u.lastupdated ASC
+      LIMIT
+        1), MAX(ud.email_domain) ) email_domain,
+    # this will be the reg value MAX( COALESCE( ou.email_domain_group,
+    CASE
+      WHEN e.email_domain IS NULL THEN "other"
+    ELSE
+    e.email_domain
+  END
+    ) ) email_domain_group,
+  COALESCE( MAX(ud.email_domain_latest), STRING_AGG(u.emaildomain
+    ORDER BY
+      u.lastupdated DESC
+    LIMIT
+      1), MAX(ou.email_domain) ) email_domain_latest,
+  MAX( COALESCE(
+      CASE
+        WHEN eg.email_domain IS NULL THEN "other"
+      ELSE
+      eg.email_domain
+    END
+      , ou.email_domain_group_latest ) ) email_domain_group_latest,
+  TIMESTAMP_TRUNC( MAX(COALESCE(ud.last_login_ts, u.lastlogin, ou.last_login_ts, ou.reg_ts)), second ) last_login_ts,
+  MAX(COALESCE(ud.pic_upload, ou.pic_upload, 0)) pic_upload,
+  MAX( COALESCE(ud.reg_agent, ou.reg_device, u.registrationagent, 'Desktop') ) reg_device,
+  # DO we want IN FIRST place consider userdiary? Also mapping? MAX(COALESCE(ud.reg_os, ou.reg_os, u.registrationos, 'Other')) reg_os,
+  # DO we want IN FIRST place consider userdiary? Also mapping? MAX(COALESCE(ud.ua_reg, ou.reg_ua)) reg_ua,
+  MAX(COALESCE(ud.pay_user_agent, ou.pay_device)) pay_device,
+  MAX(COALESCE(ud.pay_os, ou.pay_os)) pay_os,
+  MAX(COALESCE(ud.ua_fo, ou.pay_ua)) pay_ua,
+  MAX( COALESCE(ud.user_agent_latest, ou.last_device, ou.reg_device, "Desktop") ) last_device,
+  MAX(COALESCE(ud.ua_latest, ou.last_ua)) last_ua,
+  COALESCE( MAX(ud.pps_new), SAFE_CAST( STRING_AGG( SAFE_CAST(u.purchaseprobabilityscore AS string)
+      ORDER BY
+        u.lastupdated DESC
+      LIMIT
+        1 ) AS float64 ), MAX(ou.purchase_probability_score), MAX(ud.pps_old), MAX(ud.pps) ) purchase_probability_score,
+  MAX(COALESCE(ud.scammer_score, ou.scammer_score)) scammer_score,
+  MAX(COALESCE(ud.latest_fraud_score, ou.fraud_score_latest)) fraud_score_latest,
+  COALESCE( MAX(ou.reg_ip_country_code), MAX(utr.country_code), STRING_AGG(u.registrationipcountry
+    ORDER BY
+      u.lastupdated ASC
+    LIMIT
+      1) ) reg_ip_country_code,
+  MAX(COALESCE(ud.ip_country_reg, ou.reg_ip_country)) reg_ip_country,
+  MAX(COALESCE(ud.ip_country_fo, ou.pay_ip_country)) pay_ip_country,
+  MAX(COALESCE(ud.ip_country_latest, ou.last_ip_country)) last_ip_country,
+  MAX(COALESCE(ud.deviceid_reg, ou.reg_device_id)) reg_device_id,
+  MAX(COALESCE(ud.deviceid_fo, ou.pay_device_id)) pay_device_id,
+  MAX(COALESCE(ud.deviceid_latest, ou.last_device_id)) last_device_id,
+  MAX(COALESCE(ud.ip_asn_reg, ou.reg_ip_asn)) reg_ip_asn,
+  MAX(COALESCE(ud.ip_asn_fo, ou.pay_ip_asn)) pay_ip_asn,
+  MAX(COALESCE(ud.ip_asn_latest, ou.last_ip_asn)) last_ip_asn,
+  MAX(COALESCE(ud.ip_aso_reg, ou.reg_ip_aso)) reg_ip_aso,
+  MAX(COALESCE(ud.ip_aso_fo, ou.pay_ip_aso)) pay_ip_aso,
+  MAX(COALESCE(ud.ip_aso_latest, ou.last_ip_aso)) last_ip_aso,
+  MAX( COALESCE(utr.ip, u.registrationip, ou.reg_ip_address_encrypted, ud.ip_address) ) reg_ip_address_encrypted,
+  MAX(COALESCE(ud.pay_ab_test_id, ou.pay_ab_test_id)) pay_ab_test_id,
+  MAX(COALESCE(o.pay_first_order_ts, ou.pay_first_order_ts)) pay_first_order_ts,
+  MAX(COALESCE(o.pay_last_order_ts, ou.pay_last_order_ts)) pay_last_order_ts,
+  MIN(COALESCE(o.pay_first_ls_ts, ou.pay_first_ls_ts)) pay_first_ls_ts,
+  TIMESTAMP_TRUNC( MIN(COALESCE(u.firstpp1visittime, ou.pay_first_pp1_ts)), second ) pay_first_pp1_ts,
+  COALESCE( MAX(ud.notification_allowed),
+    CASE
+      WHEN STRING_AGG( SAFE_CAST(u.notificationallowed AS string) ORDER BY u.lastupdated DESC LIMIT 1 ) = "true" THEN 1
+  END
+    , MAX(ou.crm_nf_allowed) ) crm_nf_allowed,
+  TIMESTAMP_TRUNC( MAX( COALESCE(
+        CASE
+          WHEN u.notificationallowed = FALSE THEN notificationallowedchangetime
+        ELSE
+        NULL
+      END
+        , ou.crm_nf_unsubscribe_ts ) ), second ) crm_nf_unsubscribe_ts,
+  COALESCE( MAX(ud.newsletter_allowed),
+    CASE
+      WHEN STRING_AGG( SAFE_CAST(u.newsletterallowed AS string) ORDER BY u.lastupdated DESC LIMIT 1 ) = "true" THEN 1
+  END
     ,
-    max(
-        coalesce(st.trait_15_values, ou.search_traits_education)
-    ) as search_traits_education,
-    coalesce(
-        string_agg(
-            safe_cast(u.searchsizemin as string) order by u.lastupdated desc limit 1
-        ),
-        max(ou.search_size_min)
-    ) as search_size_min,
-    coalesce(
-        string_agg(
-            safe_cast(u.searchsizemax as string) order by u.lastupdated desc limit 1
-        ),
-        max(ou.search_size_max)
-    ) as search_size_max,
-    coalesce(
-        string_agg(
-            safe_cast(u.searchagemin as string) order by u.lastupdated desc limit 1
-        ),
-        max(ou.search_age_min)
-    ) as search_age_min,
-    coalesce(
-        string_agg(
-            safe_cast(u.searchagemax as string) order by u.lastupdated desc limit 1
-        ),
-        max(ou.search_age_max)
-    ) as search_age_max,
-    coalesce(
-        string_agg(
-            safe_cast(u.searchfamilystatuses as string)
-            order by u.lastupdated desc
-            limit 1
-        ),
-        max(ou.search_family_status)
-    ) as search_family_status,
-    coalesce(
-        string_agg(
-            safe_cast(u.searchshapes as string) order by u.lastupdated desc limit 1
-        ),
-        max(ou.search_shape)
-    ) as search_shape,
-    coalesce(
-        string_agg(
-            safe_cast(u.searchhairlengths as string) order by u.lastupdated desc limit 1
-        ),
-        max(ou.search_hair_length)
-    ) as search_hair_length,
-    coalesce(
-        string_agg(
-            safe_cast(u.searchhaircolors as string) order by u.lastupdated desc limit 1
-        ),
-        max(ou.search_hair_color)
-    ) as search_hair_color,
-    coalesce(
-        string_agg(
-            safe_cast(u.searcheyescolors as string) order by u.lastupdated desc limit 1
-        ),
-        max(ou.search_eye_color)
-    ) as search_eye_color,
-    max(coalesce(u.cid, ou.tracking_code, ud.tracking_code, "unknown")) tracking_code,  # this will need to be changed to guestdiary once implementation done
-    max(upper(coalesce(u.cid, ou.upcase_tc, ud.tracking_code, "unknown"))) upcase_tc,
-    max(coalesce(ud.tracker_name, ou.tracker_name)) tracker_name,
-    min(coalesce(ud.deletion_request_ts, ou.deletion_request_ts)) deletion_request_ts,
-    max(coalesce(ud.bot_score, ou.bot_score)) as bot_score,
-    max(coalesce(ud.nols_prob, ou.nols_prob)) as nols_prob,
-    max(coalesce(ud.ip_org_latest, ou.last_ip_org)) last_ip_org,
-    max(
-        coalesce(ud.reg_purchase_probability_score, ou.reg_purchase_probability_score)
-    ) as reg_purchase_probability_score,
-    max(
-        coalesce(ud.reg_mailc_probability_score, ou.reg_mailc_probability_score)
-    ) as reg_mailc_probability_score,
-    max(coalesce(ud.reg_additional_data, ou.reg_additional_data)) as reg_additional_data
-
-    ,
-    max(coalesce(mu.master_uid, ou.master_uid)) master_uid,
-    max(coalesce(mu.uid_rank, ou.uid_rank)) uid_rank,
-    max(coalesce(mu.encrypted_email, ou.encrypted_email)) encrypted_email,
-    max(coalesce(mu.encrypted_email_rank, ou.encrypted_email_rank)) encrypted_email_rank
-
-from user_base ub
-left join
-    (
-        select *
-        from ${ ref("userProfile") }
-        where date(lastupdated) >= (select start_date from date_range)
-    ) u
-    on ub.user_id = u.id
-
-left join ud on ub.user_id = ud.user_id
-
-left join ${ ref("missing_reg_tokens") } r on ub.user_id = r.userid
-
-left join ${ self() } ou on ub.user_id = ou.user_id
-
-left join ${ ref("users_master_uid_rank") } mu on ub.user_id = mu.user_id
-
--- DAT-15408 user reg ip moved to userTrackingInfo
-left join
-    (
-        select
-            userid,
-            string_agg(country order by updatedtime desc limit 1) as country_code,
-            string_agg(ip order by updatedtime desc limit 1) as ip
-        from ${ref("userTrackingInfo")}
-        where
-            date(updatedtime) >= (select start_date from date_range)
-            and type = "REG_IP"
-            and country is not null
-            and date(updatedtime) > '2023-06-13'  -- iso code released on 13.06.23
-        group by userid
-    ) utr
-    on ub.user_id = utr.userid
-
-left join
-    (
-        select
-            id,
-            max(lastupdated),
-            string_agg(
-                case
-                    when regexp_replace(json_extract(t, "$.traitId"), '"', '') = '10033'
-                    then regexp_replace(json_extract(t, "$.values"), '"', '')
-                    else null
-                end
-                order by lastupdated desc
-                limit 1
-            ) as trait_10033_values,
-            string_agg(
-                case
-                    when regexp_replace(json_extract(t, "$.traitId"), '"', '') = '10034'
-                    then regexp_replace(json_extract(t, "$.values"), '"', '')
-                    else null
-                end
-                order by lastupdated desc
-                limit 1
-            ) as trait_10034_values,
-            string_agg(
-                case
-                    when regexp_replace(json_extract(t, "$.traitId"), '"', '') = '10035'
-                    then regexp_replace(json_extract(t, "$.values"), '"', '')
-                    else null
-                end
-                order by lastupdated desc
-                limit 1
-            ) as trait_10035_values
-        from
-            ${ ref("userProfile") } u,
-            unnest(json_extract_array(traits, '$')) t
-        where
-            regexp_replace(json_extract(t, "$.traitId"), '"', '')
-            in ('10035', '10033', '10034')
-            and date(lastupdated) >= (select start_date from date_range)
-        group by id
-    ) tr
-    on ub.user_id = tr.id
-
-left join
-    (
-        select
-            id,
-            max(lastupdated),
-            string_agg(
-                case
-                    when regexp_replace(json_extract(t, "$.traitId"), '"', '') = '10033'
-                    then regexp_replace(json_extract(t, "$.values"), '"', '')
-                    else null
-                end
-                order by lastupdated desc
-                limit 1
-            ) as trait_10033_values,
-            string_agg(
-                case
-                    when regexp_replace(json_extract(t, "$.traitId"), '"', '') = '10034'
-                    then regexp_replace(json_extract(t, "$.values"), '"', '')
-                    else null
-                end
-                order by lastupdated desc
-                limit 1
-            ) as trait_10034_values,
-            string_agg(
-                case
-                    when regexp_replace(json_extract(t, "$.traitId"), '"', '') = '10035'
-                    then regexp_replace(json_extract(t, "$.values"), '"', '')
-                    else null
-                end
-                order by lastupdated desc
-                limit 1
-            ) as trait_10035_values,
-            string_agg(
-                case
-                    when regexp_replace(json_extract(t, "$.traitId"), '"', '') = '15'
-                    then regexp_replace(json_extract(t, "$.values"), '"', '')
-                    else null
-                end
-                order by lastupdated desc
-                limit 1
-            ) as trait_15_values,
-            string_agg(
-                case
-                    when regexp_replace(json_extract(t, "$.traitId"), '"', '') = '17'
-                    then regexp_replace(json_extract(t, "$.values"), '"', '')
-                    else null
-                end
-                order by lastupdated desc
-                limit 1
-            ) as trait_17_values,
-            string_agg(
-                case
-                    when regexp_replace(json_extract(t, "$.traitId"), '"', '') = '18'
-                    then regexp_replace(json_extract(t, "$.values"), '"', '')
-                    else null
-                end
-                order by lastupdated desc
-                limit 1
-            ) as trait_18_values
-        from
-            ${ ref("userProfile") } u,
-            unnest(json_extract_array(searchtraits, '$')) t
-        where
-            regexp_replace(json_extract(t, "$.traitId"), '"', '')
-            in ('10033', '10034', '10035', '15', '17', '18')
-            and date(lastupdated) >= (select start_date from date_range)
-        group by id
-    ) st
-    on ub.user_id = st.id
-
-left join
-    (select email_domain from ${ref("v_emaildomain_group")} group by 1) e
-    on regexp_replace(u.emaildomain, r'\.(.+)', "") = e.email_domain
-
-left join
-    (
-        select
-            user_id,
-            min(order_ts) pay_first_order_ts,
-            max(order_ts) pay_last_order_ts,
-            min(cancellation_ts) cancellation_ts,
-            min(rf_ts) rf_ts,
-            min(cb_ts) cb_ts,
-            min(coalesce(rf_ts, cb_ts)) pay_first_ls_ts
-        from `cdate-prod.ods_payment.payment_subscription`
-        group by 1
-    ) o
-    on ub.user_id = o.user_id
-
-left join
-    (select email_domain from ${ref("v_emaildomain_group")} group by 1) eg
-    on regexp_replace(
-        coalesce(ud.email_domain_latest, ou.email_domain_latest), r'\.(.+)', ""
-    )
-    = eg.email_domain
-
--- where date(u.lastUpdated) >= (select start_date from date_range)
-group by 1
+    CASE
+      WHEN STRING_AGG( SAFE_CAST(u.notificationallowed AS string) ORDER BY u.lastupdated DESC LIMIT 1 ) = "true" THEN 1
+  END
+    , MAX(ou.crm_lc_allowed) ) crm_lc_allowed,
+  TIMESTAMP_TRUNC( MAX( COALESCE(
+        CASE
+          WHEN u.newsletterallowed = FALSE THEN newsletterallowedchangetime
+        ELSE
+        NULL
+      END
+        , ou.crm_lc_unsubscribe_ts ) ), second ) crm_lc_unsubscribe_ts,
+  MAX(COALESCE(ou.crm_login_first, ud.first_crm_login)) crm_login_first,
+  # #
+IF
+  already value IN ods_user,
+  THEN NO
+UPDATE
+  MAX(COALESCE(ou.crm_message_first, ud.first_crm_message)) crm_message_first,
+  # #
+IF
+  already value IN ods_user,
+  THEN NO
+UPDATE
+  MAX(COALESCE(ud.hard_bounce, ou.crm_hard_bounce, 0)) crm_hard_bounce,
+  COALESCE( MAX(ud.reg_reference), MAX(ou.reg_reference), STRING_AGG(u.reference
+    ORDER BY
+      u.lastupdated ASC
+    LIMIT
+      1) ) reg_reference,
+  MAX(COALESCE(ud.geo_data, ou.geo_data)) geo_data,
+  MAX(COALESCE(ud.crossreg_userid, ou.crossreg_user_id)) crossreg_user_id,
+  MAX(COALESCE(ud.reg_ab_test_id, ou.reg_ab_test_id)) reg_ab_test_id,
+  MAX( COALESCE( ud.time_to_reg_completion_ms, SAFE_CAST(u.timetocompleteregistration AS int64), ou.time_to_reg_ms ) ) time_to_reg_ms,
+  MAX(COALESCE(ud.pp1_visit_1h, ou.pp1_visit_1h)) pp1_visit_1h,
+  MAX(COALESCE(ud.pp2_visit_1h, ou.pp2_visit_1h)) pp2_visit_1h,
+  MAX(COALESCE(ud.pic_upload_1h, ou.pic_upload_1h)) pic_upload_1h,
+  MAX(COALESCE(ud.prof_delete_1h, ou.profile_delete_1h)) profile_delete_1h,
+  MAX(COALESCE(ud.instant_matches_1h, ou.instant_matches_1h)) instant_matches_1h,
+  MAX(COALESCE(ud.search_update_1h, ou.search_update_1h)) search_update_1h,
+  MAX(COALESCE(ud.profile_update_1h, ou.profile_update_1h)) profile_update_1h,
+  MAX(COALESCE(ud.profile_view_1h, ou.profile_view_1h)) profile_view_1h,
+  MAX(COALESCE(ud.freetext_sent_1h, ou.freetext_sent_1h)) freetext_sent_1h,
+  MAX(COALESCE(ud.fo_attempt_1h, ou.fo_try_1h)) fo_try_1h,
+  MAX(COALESCE(ud.app_install_ts_1h, ou.app_install_1h_ts)) app_install_1h_ts,
+  # profile COALESCE( STRING_AGG( SAFE_CAST(u.eyescolor1 AS string)
+ORDER BY
+  u.lastupdated DESC
+LIMIT
+  1 ), MAX(ou.eye_color) ) eye_color,
+  COALESCE( STRING_AGG( SAFE_CAST(u.hairlength1 AS string)
+    ORDER BY
+      u.lastupdated DESC
+    LIMIT
+      1 ), MAX(ou.hair_length) ) hair_length,
+  COALESCE( STRING_AGG( SAFE_CAST(u.haircolor1 AS string)
+    ORDER BY
+      u.lastupdated DESC
+    LIMIT
+      1 ), MAX(ou.hair_color) ) hair_color,
+  COALESCE( STRING_AGG(SAFE_CAST(u.shape1 AS string)
+    ORDER BY
+      u.lastupdated DESC
+    LIMIT
+      1), MAX(ou.shape) ) shape,
+  COALESCE( STRING_AGG(SAFE_CAST(u.size1 AS string)
+    ORDER BY
+      u.lastupdated DESC
+    LIMIT
+      1), MAX(ou.size) ) size,
+  COALESCE( STRING_AGG(SAFE_CAST(u.bodyart AS string)
+    ORDER BY
+      u.lastupdated DESC
+    LIMIT
+      1), MAX(ou.bodyart) ) bodyart,
+  COALESCE( STRING_AGG( SAFE_CAST(u.drinkinghabits AS string)
+    ORDER BY
+      u.lastupdated DESC
+    LIMIT
+      1 ), MAX(ou.drinking_habits) ) drinking_habits,
+  COALESCE( STRING_AGG( SAFE_CAST(u.smokinghabits AS string)
+    ORDER BY
+      u.lastupdated DESC
+    LIMIT
+      1 ), MAX(ou.smoking_habits) ) smoking_habits,
+  COALESCE( STRING_AGG( SAFE_CAST(u.familystatus1 AS string)
+    ORDER BY
+      u.lastupdated DESC
+    LIMIT
+      1 ), MAX(ou.family_status) ) family_status,
+  COALESCE( STRING_AGG( SAFE_CAST(u.education AS string)
+    ORDER BY
+      u.lastupdated DESC
+    LIMIT
+      1 ), MAX(ou.education) ) education,
+  COALESCE( STRING_AGG( SAFE_CAST(u.professionalfield AS string)
+    ORDER BY
+      u.lastupdated DESC
+    LIMIT
+      1 ), MAX(ou.profession) ) profession,
+  COALESCE( STRING_AGG(SAFE_CAST(u.wells AS string)
+    ORDER BY
+      u.lastupdated DESC
+    LIMIT
+      1), MAX(ou.wells) ) wells,
+  COALESCE( STRING_AGG(SAFE_CAST(u.prouds AS string)
+    ORDER BY
+      u.lastupdated DESC
+    LIMIT
+      1), MAX(ou.prouds) ) prouds,
+  MAX(COALESCE(tr.trait_10033_values, ou.traits_income)) AS traits_income,
+  MAX(COALESCE(tr.trait_10035_values, ou.traits_children)) AS traits_children,
+  MAX(COALESCE(tr.trait_10034_values, ou.traits_religion)) AS traits_religion,
+  MAX( COALESCE(st.trait_10033_values, ou.search_traits_income) ) AS search_traits_income,
+  MAX( COALESCE(st.trait_10035_values, ou.search_traits_children) ) AS search_traits_children,
+  MAX( COALESCE(st.trait_10034_values, ou.search_traits_religion) ) AS search_traits_religion,
+  MAX( COALESCE(st.trait_17_values, ou.search_traits_drinking) ) AS search_traits_drinking,
+  MAX(COALESCE(st.trait_18_values, ou.search_traits_smoking)) AS search_traits_smoking,
+  MAX( COALESCE(st.trait_15_values, ou.search_traits_education) ) AS search_traits_education,
+  COALESCE( STRING_AGG( SAFE_CAST(u.searchsizemin AS string)
+    ORDER BY
+      u.lastupdated DESC
+    LIMIT
+      1 ), MAX(ou.search_size_min) ) AS search_size_min,
+  COALESCE( STRING_AGG( SAFE_CAST(u.searchsizemax AS string)
+    ORDER BY
+      u.lastupdated DESC
+    LIMIT
+      1 ), MAX(ou.search_size_max) ) AS search_size_max,
+  COALESCE( STRING_AGG( SAFE_CAST(u.searchagemin AS string)
+    ORDER BY
+      u.lastupdated DESC
+    LIMIT
+      1 ), MAX(ou.search_age_min) ) AS search_age_min,
+  COALESCE( STRING_AGG( SAFE_CAST(u.searchagemax AS string)
+    ORDER BY
+      u.lastupdated DESC
+    LIMIT
+      1 ), MAX(ou.search_age_max) ) AS search_age_max,
+  COALESCE( STRING_AGG( SAFE_CAST(u.searchfamilystatuses AS string)
+    ORDER BY
+      u.lastupdated DESC
+    LIMIT
+      1 ), MAX(ou.search_family_status) ) AS search_family_status,
+  COALESCE( STRING_AGG( SAFE_CAST(u.searchshapes AS string)
+    ORDER BY
+      u.lastupdated DESC
+    LIMIT
+      1 ), MAX(ou.search_shape) ) AS search_shape,
+  COALESCE( STRING_AGG( SAFE_CAST(u.searchhairlengths AS string)
+    ORDER BY
+      u.lastupdated DESC
+    LIMIT
+      1 ), MAX(ou.search_hair_length) ) AS search_hair_length,
+  COALESCE( STRING_AGG( SAFE_CAST(u.searchhaircolors AS string)
+    ORDER BY
+      u.lastupdated DESC
+    LIMIT
+      1 ), MAX(ou.search_hair_color) ) AS search_hair_color,
+  COALESCE( STRING_AGG( SAFE_CAST(u.searcheyescolors AS string)
+    ORDER BY
+      u.lastupdated DESC
+    LIMIT
+      1 ), MAX(ou.search_eye_color) ) AS search_eye_color,
+  MAX(COALESCE(u.cid, ou.tracking_code, ud.tracking_code, "unknown")) tracking_code,
+  # this will need TO be changed TO guestdiary once implementation done MAX(UPPER(COALESCE(u.cid, ou.upcase_tc, ud.tracking_code, "unknown"))) upcase_tc,
+  MAX(COALESCE(ud.tracker_name, ou.tracker_name)) tracker_name,
+  MIN(COALESCE(ud.deletion_request_ts, ou.deletion_request_ts)) deletion_request_ts,
+  MAX(COALESCE(ud.bot_score, ou.bot_score)) AS bot_score,
+  MAX(COALESCE(ud.nols_prob, ou.nols_prob)) AS nols_prob,
+  MAX(COALESCE(ud.ip_org_latest, ou.last_ip_org)) last_ip_org,
+  MAX( COALESCE(ud.reg_purchase_probability_score, ou.reg_purchase_probability_score) ) AS reg_purchase_probability_score,
+  MAX( COALESCE(ud.reg_mailc_probability_score, ou.reg_mailc_probability_score) ) AS reg_mailc_probability_score,
+  MAX(COALESCE(ud.reg_additional_data, ou.reg_additional_data)) AS reg_additional_data,
+  MAX(COALESCE(mu.master_uid, ou.master_uid)) master_uid,
+  MAX(COALESCE(mu.uid_rank, ou.uid_rank)) uid_rank,
+  MAX(COALESCE(mu.encrypted_email, ou.encrypted_email)) encrypted_email,
+  MAX(COALESCE(mu.encrypted_email_rank, ou.encrypted_email_rank)) encrypted_email_rank
+FROM
+  user_base ub
+LEFT JOIN (
+  SELECT
+    *
+  FROM
+    ${ref("userProfile")}
+  WHERE
+    DATE(lastupdated) >= (
+    SELECT
+      start_date
+    FROM
+      date_range) ) u
+ON
+  ub.user_id = u.id
+LEFT JOIN
+  ud
+ON
+  ub.user_id = ud.user_id
+LEFT JOIN
+  ${ref("missing_reg_tokens")} r
+ON
+  ub.user_id = r.userid
+LEFT JOIN
+  ${self()} ou
+ON
+  ub.user_id = ou.user_id
+LEFT JOIN
+  ${ref("users_master_uid_rank")} mu
+ON
+  ub.user_id = mu.user_id
+  -- DAT-15408 user reg ip moved to userTrackingInfo
+LEFT JOIN (
+  SELECT
+    userid,
+    STRING_AGG(country
+    ORDER BY
+      updatedtime DESC
+    LIMIT
+      1) AS country_code,
+    STRING_AGG(ip
+    ORDER BY
+      updatedtime DESC
+    LIMIT
+      1) AS ip
+  FROM
+    ${ref("userTrackingInfo")}
+  WHERE
+    DATE(updatedtime) >= (
+    SELECT
+      start_date
+    FROM
+      date_range)
+    AND type = "REG_IP"
+    AND country IS NOT NULL
+    AND DATE(updatedtime) > '2023-06-13'
+    -- iso code released on 13.06.23
+  GROUP BY
+    userid ) utr
+ON
+  ub.user_id = utr.userid
+LEFT JOIN (
+  SELECT
+    id,
+    MAX(lastupdated),
+    STRING_AGG(
+      CASE
+        WHEN REGEXP_REPLACE(JSON_EXTRACT(t, "$.traitId"), '"', '') = '10033' THEN REGEXP_REPLACE(JSON_EXTRACT(t, "$.values"), '"', '')
+      ELSE
+      NULL
+    END
+    ORDER BY
+      lastupdated DESC
+    LIMIT
+      1 ) AS trait_10033_values,
+    STRING_AGG(
+      CASE
+        WHEN REGEXP_REPLACE(JSON_EXTRACT(t, "$.traitId"), '"', '') = '10034' THEN REGEXP_REPLACE(JSON_EXTRACT(t, "$.values"), '"', '')
+      ELSE
+      NULL
+    END
+    ORDER BY
+      lastupdated DESC
+    LIMIT
+      1 ) AS trait_10034_values,
+    STRING_AGG(
+      CASE
+        WHEN REGEXP_REPLACE(JSON_EXTRACT(t, "$.traitId"), '"', '') = '10035' THEN REGEXP_REPLACE(JSON_EXTRACT(t, "$.values"), '"', '')
+      ELSE
+      NULL
+    END
+    ORDER BY
+      lastupdated DESC
+    LIMIT
+      1 ) AS trait_10035_values
+  FROM
+    ${ref("userProfile")} u,
+    UNNEST(JSON_EXTRACT_ARRAY(traits, '$')) t
+  WHERE
+    REGEXP_REPLACE(JSON_EXTRACT(t, "$.traitId"), '"', '') IN ('10035',
+      '10033',
+      '10034')
+    AND DATE(lastupdated) >= (
+    SELECT
+      start_date
+    FROM
+      date_range)
+  GROUP BY
+    id ) tr
+ON
+  ub.user_id = tr.id
+LEFT JOIN (
+  SELECT
+    id,
+    MAX(lastupdated),
+    STRING_AGG(
+      CASE
+        WHEN REGEXP_REPLACE(JSON_EXTRACT(t, "$.traitId"), '"', '') = '10033' THEN REGEXP_REPLACE(JSON_EXTRACT(t, "$.values"), '"', '')
+      ELSE
+      NULL
+    END
+    ORDER BY
+      lastupdated DESC
+    LIMIT
+      1 ) AS trait_10033_values,
+    STRING_AGG(
+      CASE
+        WHEN REGEXP_REPLACE(JSON_EXTRACT(t, "$.traitId"), '"', '') = '10034' THEN REGEXP_REPLACE(JSON_EXTRACT(t, "$.values"), '"', '')
+      ELSE
+      NULL
+    END
+    ORDER BY
+      lastupdated DESC
+    LIMIT
+      1 ) AS trait_10034_values,
+    STRING_AGG(
+      CASE
+        WHEN REGEXP_REPLACE(JSON_EXTRACT(t, "$.traitId"), '"', '') = '10035' THEN REGEXP_REPLACE(JSON_EXTRACT(t, "$.values"), '"', '')
+      ELSE
+      NULL
+    END
+    ORDER BY
+      lastupdated DESC
+    LIMIT
+      1 ) AS trait_10035_values,
+    STRING_AGG(
+      CASE
+        WHEN REGEXP_REPLACE(JSON_EXTRACT(t, "$.traitId"), '"', '') = '15' THEN REGEXP_REPLACE(JSON_EXTRACT(t, "$.values"), '"', '')
+      ELSE
+      NULL
+    END
+    ORDER BY
+      lastupdated DESC
+    LIMIT
+      1 ) AS trait_15_values,
+    STRING_AGG(
+      CASE
+        WHEN REGEXP_REPLACE(JSON_EXTRACT(t, "$.traitId"), '"', '') = '17' THEN REGEXP_REPLACE(JSON_EXTRACT(t, "$.values"), '"', '')
+      ELSE
+      NULL
+    END
+    ORDER BY
+      lastupdated DESC
+    LIMIT
+      1 ) AS trait_17_values,
+    STRING_AGG(
+      CASE
+        WHEN REGEXP_REPLACE(JSON_EXTRACT(t, "$.traitId"), '"', '') = '18' THEN REGEXP_REPLACE(JSON_EXTRACT(t, "$.values"), '"', '')
+      ELSE
+      NULL
+    END
+    ORDER BY
+      lastupdated DESC
+    LIMIT
+      1 ) AS trait_18_values
+  FROM
+    ${ref("userProfile")} u,
+    UNNEST(JSON_EXTRACT_ARRAY(searchtraits, '$')) t
+  WHERE
+    REGEXP_REPLACE(JSON_EXTRACT(t, "$.traitId"), '"', '') IN ('10033',
+      '10034',
+      '10035',
+      '15',
+      '17',
+      '18')
+    AND DATE(lastupdated) >= (
+    SELECT
+      start_date
+    FROM
+      date_range)
+  GROUP BY
+    id ) st
+ON
+  ub.user_id = st.id
+LEFT JOIN (
+  SELECT
+    email_domain
+  FROM
+    ${ref("v_emaildomain_group")}
+  GROUP BY
+    1) e
+ON
+  REGEXP_REPLACE(u.emaildomain, r'\.(.+)', "") = e.email_domain
+LEFT JOIN (
+  SELECT
+    user_id,
+    MIN(order_ts) pay_first_order_ts,
+    MAX(order_ts) pay_last_order_ts,
+    MIN(cancellation_ts) cancellation_ts,
+    MIN(rf_ts) rf_ts,
+    MIN(cb_ts) cb_ts,
+    MIN(COALESCE(rf_ts, cb_ts)) pay_first_ls_ts
+  FROM
+    `cdate-prod.ods_payment.payment_subscription`
+  GROUP BY
+    1 ) o
+ON
+  ub.user_id = o.user_id
+LEFT JOIN (
+  SELECT
+    email_domain
+  FROM
+    ${ref("v_emaildomain_group")}
+  GROUP BY
+    1) eg
+ON
+  REGEXP_REPLACE( COALESCE(ud.email_domain_latest, ou.email_domain_latest), r'\.(.+)', "" ) = eg.email_domain
+  -- where date(u.lastUpdated) >= (select start_date from date_range)
+GROUP BY
+  1
