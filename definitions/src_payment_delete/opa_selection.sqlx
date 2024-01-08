@@ -1,0 +1,9 @@
+config { type: "view" }
+
+SELECT * except(source_ts, rn)
+FROM
+(
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY source_ts DESC) rn
+    FROM `cdate-prod.src_payment_stag.opa_selection`
+) 
+WHERE rn = 1

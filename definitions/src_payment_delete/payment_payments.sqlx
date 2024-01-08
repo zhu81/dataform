@@ -1,0 +1,69 @@
+config { type: "view" }
+
+with src as
+(
+    SELECT * except(source_ts, rn)
+    FROM
+    (
+        SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY source_ts DESC) rn
+        FROM `cdate-prod.src_payment_stag.payment_payments`
+    ) 
+    WHERE rn = 1
+    union all
+    select * except (source_ts, initialfee, arm, installmentnum, psp, migrationreferenceid)
+    from `cdate-prod.src_payment_stag.legacy_payment_payments`
+)
+
+SELECT src.id	,
+src.productid	,
+src.type	,
+src.userid	,
+src.countrycode	,
+src.customerid	,
+src.transactionid	,
+src.date	,
+src.paymentprovider	,
+case when c.type = 'wrong_iOS_sales' then 29.99 else src.price	end as price,
+case when c.type = 'wrong_currency' then c.action else src.currency end as currency	,
+src.returncode	,
+src.statuscode	,
+src.returnmessage	,
+src.jobid	,
+case when c.type = 'missing_final_RN' then 'RN' 
+    when c.type = 'wrong FO_FINAL_SUCCESS' then 'FO_FINAL_FAIL'
+    else src.transactiontype end as transactiontype	,
+src.productcycle	,
+src.acquirer	,
+src.olduserstatus	,
+src.newuserstatus	,
+src.clientid	,
+src.redebittries	,
+src.brand	,
+src.accountholder	,
+src.debid	,
+src.userip	,
+src.accountiban	,
+src.bankbic	,
+src.expiryyear	,
+src.expirymonth	,
+src.mandateid	,
+src.notificationid	,
+src.transactioneventid	,
+src.pspaccess	,
+src.paymentcardiin	,
+src.channel_id	,
+src.paymentcardlastdigits	,
+src.productbrand	,
+src.opa_id	,
+src.chainid	,
+src.provider_3ds_ref_id	,
+src.renewal_channel_id	,
+src.tax_id	,
+src.three_ds_transaction	,
+src.purchase_domain	,
+src.contract_config_id	,
+src.mandate_reference	
+FROM src 
+  LEFT OUTER JOIN `cdate-prod.src_payment.payment_payments_ignore_list` il ON src.id = il.ID
+  left join cdate-prod.src_payment.payment_payments_correction c on src.id = c.id
+WHERE il.ID IS NULL
