@@ -1,10 +1,7 @@
-config {
-    type: "incremental",
-    uniqueKey: ["user_id"],
+config { type: "incremental",
     schema: "ods_user",
-    name: "users",
-    tags: ['daily']
-}
+    tags: ["daily"] }
+
 
 WITH date_range as ( SELECT DATE_SUB(current_date(), INTERVAL 1 DAY) as start_date),
 -- WITH date_range as ( SELECT date('2021-07-01') as start_date),
@@ -282,7 +279,7 @@ ud as (
     , max(case when event_type = 'PPS_REG_CLASSIFICATION' then SAFE_CAST(JSON_EXTRACT(additional_data, '$.mailC.score') as FLOAT64) end) as reg_mailc_probability_score
     , max(case when event_type = 'REG_COMPLETED' then additional_data end) as reg_additional_data
     , max(tracking_code) as tracking_code
-  from  `cdate-prod.src_userdiary.userdiary_all`
+  from  ${ref("userdiary_all")} 
   where DATE(event_ts) >= (select start_date from date_range)
   #and DATE(event_ts) < (select end_date from date_range)
   group by user_id
@@ -291,9 +288,9 @@ ud as (
 user_base as (
   select user_id
   from (
-    select id user_id from `cdate-prod.src_mongodb.userProfile` where date(lastUpdated) >= (select start_date from date_range) and id is not null
+    select id user_id from ${ref("userProfile")}  where date(lastUpdated) >= (select start_date from date_range) and id is not null
     union all
-    select user_id from `cdate-prod.ods_user.users` where user_id is not null
+    select user_id from ${self()} where user_id is not null
     union all 
     select user_id from ud where user_id is not null
   )
@@ -453,24 +450,24 @@ SELECT ub.user_id user_id
   , max(coalesce(mu.encrypted_email_rank, ou.encrypted_email_rank)) encrypted_email_rank
 
 FROM user_base ub
-  left join (select * from `cdate-prod.src_mongodb.userProfile` where date(lastUpdated) >= (select start_date from date_range)) u
+  left join (select * from ${ref("userProfile")} where date(lastUpdated) >= (select start_date from date_range)) u
     on ub.user_id = u.id
  
   left join ud
     ON ub.user_id = ud. user_id    
   
-  left JOIN `cdate-prod.ods_user.missing_reg_tokens` r
+  left JOIN ${ref("missing_reg_tokens")} r
     ON ub.user_id=r.userid  
     
-  left join `cdate-prod.ods_user.users` ou
+  left join ${self()} ou
     on ub.user_id = ou.user_id
   
-  left join ods_user.users_master_uid_rank mu
+  left join ${ref("users_master_uid_rank")} mu
     on ub.user_id = mu.user_id
 
   -- DAT-15408 user reg ip moved to userTrackingInfo
   left join (select userId, string_agg(country order by updatedTime desc limit 1) as country_code, string_agg(ip order by updatedTime desc limit 1) as ip 
-              from `cdate-prod.src_mongodb.userTrackingInfo` 
+              from ${ref("userTrackingInfo")}
               where date(updatedTime) >= (select start_date from date_range) 
                   and type = "REG_IP" and country is not null
                   and date(updatedTime) > '2023-06-13' -- iso code released on 13.06.23
@@ -482,7 +479,7 @@ FROM user_base ub
               , string_agg(case when REGEXP_REPLACE(json_extract(t,"$.traitId"),'"','')='10033' then REGEXP_REPLACE(json_extract(t,"$.values"),'"','') else null end order by lastUpdated desc limit 1) as trait_10033_values
               , string_agg(case when REGEXP_REPLACE(json_extract(t,"$.traitId"),'"','')='10034' then REGEXP_REPLACE(json_extract(t,"$.values"),'"','') else null end order by lastUpdated desc limit 1) as trait_10034_values
               , string_agg(case when REGEXP_REPLACE(json_extract(t,"$.traitId"),'"','')='10035' then REGEXP_REPLACE(json_extract(t,"$.values"),'"','') else null end order by lastUpdated desc limit 1) as trait_10035_values
-            from cdate-prod.src_mongodb.userProfile u , unnest(JSON_EXTRACT_ARRAY(traits, '$')) t
+            from ${ref("userProfile")} u , unnest(JSON_EXTRACT_ARRAY(traits, '$')) t
             where REGEXP_REPLACE(json_extract(t,"$.traitId"),'"','') in ('10035','10033', '10034')
               and date(lastUpdated) >= (select start_date from date_range)
             group by id ) tr
@@ -496,14 +493,14 @@ FROM user_base ub
               , string_agg(case when REGEXP_REPLACE(json_extract(t,"$.traitId"),'"','')='15' then REGEXP_REPLACE(json_extract(t,"$.values"),'"','') else null end order by lastUpdated desc limit 1) as trait_15_values
               , string_agg(case when REGEXP_REPLACE(json_extract(t,"$.traitId"),'"','')='17' then REGEXP_REPLACE(json_extract(t,"$.values"),'"','') else null end order by lastUpdated desc limit 1) as trait_17_values
               , string_agg(case when REGEXP_REPLACE(json_extract(t,"$.traitId"),'"','')='18' then REGEXP_REPLACE(json_extract(t,"$.values"),'"','') else null end order by lastUpdated desc limit 1) as trait_18_values
-            from cdate-prod.src_mongodb.userProfile u , unnest(JSON_EXTRACT_ARRAY(searchTraits, '$')) t
+            from ${ref("userProfile")} u , unnest(JSON_EXTRACT_ARRAY(searchTraits, '$')) t
             where REGEXP_REPLACE(json_extract(t,"$.traitId"),'"','') in ('10033', '10034','10035','15','17','18')
               and date(lastUpdated) >= (select start_date from date_range)
             group by id  ) st
     on ub.user_id = st.id
   
 
-  LEFT JOIN (SELECT email_domain FROM `cdate-prod.ods_user.v_emaildomain_group` GROUP BY 1) e  
+  LEFT JOIN (SELECT email_domain FROM ${ref("v_emaildomain_group")} GROUP BY 1) e  
     ON REGEXP_REPLACE(u.emailDomain,r'\.(.+)',"") =e. email_domain
   
   LEFT JOIN (SELECT 
@@ -519,7 +516,7 @@ FROM user_base ub
     ON ub.user_id = o. user_id 
       
   LEFT JOIN (SELECT email_domain
-            FROM `cdate-prod.ods_user.v_emaildomain_group`
+            FROM ${ref("v_emaildomain_group")}
             GROUP BY 1
             ) eg  
     ON REGEXP_REPLACE(COALESCE(ud. email_domain_latest, ou. email_domain_latest) ,r'\.(.+)',"") =eg. email_domain

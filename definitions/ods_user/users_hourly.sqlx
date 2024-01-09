@@ -1,15 +1,10 @@
 config {
-    type: "incremental",
-    uniqueKey: ["user_id"],
-    schema: "ods_user",
-    name: "users",
+    type: "operations",
     tags: ["hourly"],
-    assertions: {
-    nonNull: ["user_id", "reg_ts"],
-      uniqueKey: ["user_id"]
-  }
+    hasOutput: true
 }
 
+insert into ods_user.users
 SELECT u.id user_id
   , MAX(u.userContactId) contact_id
   , max(r.regtoken) reg_token
@@ -204,7 +199,7 @@ FROM ${ref("userProfile")}  u
   
 
 where date(u.lastUpdated) >= current_date()
-  and u.id not in (select user_id from ${self()})
+  and u.id not in (select user_id from ${ref("users")})
   and u.id is not null
 GROUP BY 1
 
