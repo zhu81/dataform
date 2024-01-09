@@ -1,0 +1,217 @@
+config {type: "table",
+    schema: "ods_payment",
+    tags: ["daily"]}
+
+with
+    payprovider as (
+        select cid_fin, paymentprovider_fin, acquirer_fin, count(*) as ctr
+        from ${ ref("stag_payment_transaction") }
+        group by cid_fin, paymentprovider_fin, acquirer_fin
+    ),
+    payprovider2 as (
+        select
+            coalesce(cid_fin, paymentprovider_fin) as src_cid,
+            coalesce(paymentprovider_fin, paymentprovider_fin) as src_paymentprovider,
+            coalesce(acquirer_fin, paymentprovider_fin) as src_acquirer,
+            ctr,
+            case
+                when paymentprovider_fin = 'SANDBOX'
+                then 'SANDBOX'
+                when paymentprovider_fin = 'SECURE_TRADING'
+                then 'SECURETRADING'
+                when
+                    paymentprovider_fin in ('INSPARX', 'BANKTRANSFER', 'CAMPAIGN')
+                    and cid_fin is null
+                then 'INSPARX'
+                when paymentprovider_fin = 'NOVALNET'
+                then 'NOVALNET'
+                when cid_fin = '55192779498e0b92a7b2fc48'
+                then 'WIRECARD'
+                when acquirer_fin in ('Cielo', 'CIELO')
+                then 'ALLPAGO'
+                else
+                    first_value(paymentprovider_fin) over (
+                        partition by
+                            coalesce(
+                                case when cid_fin = 'tbd' then null else cid_fin end,
+                                paymentprovider_fin
+                            )
+                        order by ctr desc
+                    )
+            end as psp,
+            case
+                when paymentprovider_fin = 'SANDBOX'
+                then 'SANDBOX'
+                when
+                    paymentprovider_fin in ('INSPARX', 'BANKTRANSFER', 'CAMPAIGN')
+                    and cid_fin is null
+                then 'INSPARX'
+                when paymentprovider_fin = 'NOVALNET'
+                then 'NOVALNET'
+                else
+                    first_value(
+                        coalesce(
+                            case
+                                when acquirer_fin = 'n.a.'
+                                then null
+                                when acquirer_fin = 'SECURE_TRADING'
+                                then 'SECURETRADING'
+                                when acquirer_fin = 'BSPayone'
+                                then 'BSPAYONE'
+                                when acquirer_fin = 'CASHFLOWS'
+                                then 'CASHFLOW'
+                                when acquirer_fin = 'HEIDELPAY/EVO'
+                                then 'EVO'
+                                when acquirer_fin = 'Cielo'
+                                then 'CIELO'
+                                when acquirer_fin = 'Heidelpay'
+                                then 'HEIDELPAY'
+                                when acquirer_fin = 'Payvision'
+                                then 'PAYVISION'
+                                when acquirer_fin = 'Wirecard'
+                                then 'WIRECARD'
+                                when acquirer_fin = 'Bank FRICK'
+                                then 'BANK_FRICK'
+                                when paymentprovider_fin = 'ADYEN'
+                                then 'AIB'
+                                when paymentprovider_fin = 'NOVALNET'
+                                then 'NOVALNET'
+                                when paymentprovider_fin = 'OPTILE'
+                                then 'OPTILE_TBD'
+                                when paymentprovider_fin = 'ALLPAGO'
+                                then 'CIELO'
+                                when paymentprovider_fin = 'GLOBALCOLLECT'
+                                then 'CATELLA'
+                                when paymentprovider_fin = 'ALLPAGO_GMBH_BE2'
+                                then 'ALLPAGO_GMBH'
+                                else acquirer_fin
+                            end,
+                            paymentprovider_fin
+                        )
+                    ) over (
+                        partition by
+                            coalesce(
+                                case when cid_fin = 'tbd' then null else cid_fin end,
+                                case
+                                    when acquirer_fin = 'n.a.'
+                                    then null
+                                    else acquirer_fin
+                                end,
+                                paymentprovider_fin
+                            )
+                        order by ctr desc
+                    )
+            end as acq
+        from payprovider
+    ),
+    payprovider3 as (
+        select
+            * except (acq),
+            case
+                when psp = 'WIRECARD'
+                then 'WIRECARD'
+                when psp = 'SECURETRADING'
+                then 'SECURETRADING'
+                when psp = 'SANDBOX'
+                then 'SANDBOX'
+                when psp = 'PAYPAL'
+                then 'PAYPAL'
+                when psp = 'ALLPAGO'
+                then 'CIELO'
+                when psp in ('ALLPAGO', 'ALLPAGO_GMBH', 'ALLPAGO_GMBH_BE2')
+                then 'ALLPAGO_GMBH'
+                when psp = 'SECURIONPAY' and acq not in ('WORLDLINE', 'WIRECARD_UK')
+                then 'WIRECARD_UK'
+                when
+                    psp = 'HEIDELPAY'
+                    and acq not in ('EVO', 'POS', 'WIRECARD', 'PAYVISION')
+                then 'HEIDELPAY'
+                when psp = 'PAYMILL' and acq not in ('BANK_FRICK', 'EMS', 'WIRECARD')
+                then 'PAYMILL'
+                else acq
+            end as acq,
+            case
+                when psp = 'WIRECARD' or (psp = 'OPTILE_TBD' and acq = 'WIRECARD')
+                then 'WC'
+                when psp = 'SECURIONPAY'
+                then 'SP'
+                when
+                    psp = 'SECURETRADING'
+                    or (psp = 'OPTILE_TBD' and acq = 'SECURETRADING')
+                then 'ST'
+                when psp = 'SANDBOX'
+                then 'SB'
+                when psp in ('PROCESSINGPARTNERS', 'PROCESSINGPARTNERS_BE2')
+                then 'PP'
+                when psp = 'PAYPAL'
+                then 'PPAL'
+                when psp = 'PAYMENTWALL'
+                then 'PW'
+                when psp = 'NOVALNET'
+                then 'NN'
+                when psp = 'HEIDELPAY' or (psp = 'OPTILE_TBD' and acq in ('HEIDELPAY'))
+                then 'HP'
+                when acq = 'MOLLIE'
+                then 'ML'
+                when psp in ('OPTILE_TBD', 'OPTILE')
+                then 'OPT'
+                when psp in ('IOS', 'ANDROID')
+                then 'M'
+                when psp = 'INSPARX'
+                then 'IX'
+                when psp = 'CLICKANDBUY'
+                then 'IX'
+                when psp = 'CAMPAIGN'
+                then 'IX'
+                when psp = 'BANKTRANSFER'
+                then 'IX'
+                when psp = 'GLOBALCOLLECT'
+                then 'GC'
+                when psp in ('ALLPAGO')
+                then 'AP'
+                when psp in ('ALLPAGO_GMBH_BE2', 'ALLPAGO_GMBH', 'ALLPAGO')
+                then 'APG'
+                when psp = 'ADYEN'
+                then 'AD'
+                when psp = 'PAYMILL'
+                then 'PM'
+                # STU added 221214 to add any new PSP to work automatically with first
+                # two letters, i.e. TOTAL_PROCESSING = "TO". If something needs to be
+                # named different add above as exception
+                else substr(psp, 0, 2)
+            end as psp_short,
+            case
+                when
+                    psp in (
+                        'WIRECARD',
+                        'SECURETRADING',
+                        'OPTILE_TBD',
+                        'HEIDELPAY',
+                        'MOLLIE',
+                        'GLOBALCOLLECT',
+                        'ALLPAGO',
+                        'ADYEN'
+                    )
+                then 'BE2'
+                when psp in ('SANDBOX', 'INSPARX')
+                then 'NONE'
+                when psp = 'PAYPAL'
+                then 'ALL'
+                else 'DIRECT'
+            end as optile_access
+        from payprovider2
+    ),
+    payprovider4 as (
+        select *, concat(psp_short, '-', acq) as psp_acquirer from payprovider3
+    )
+
+select distinct
+    src_cid,
+    src_paymentprovider,
+    src_acquirer,
+    psp,
+    acq,
+    psp_short,
+    optile_access,
+    psp_acquirer
+from payprovider4

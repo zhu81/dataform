@@ -1,4 +1,5 @@
-config { type: "table" }
+config { type: "table" ,
+    schema: "ods_payment"}
 
 with
     rf as (
@@ -6,7 +7,7 @@ with
             user_id,
             deb_id,
             date(a.date) as rfdate,
-            sum(amount) as rf_amount,
+            sum(safe_cast(amount as float64)) as rf_amount,
             a.currency as rf_currency,
             notify_user as rf_notify_user,
             partial_refund as rf_partial,
@@ -184,37 +185,7 @@ with
             b.psp_short,
             b.optile_access,
             a.paymentcardiin as card_bin,
-            coalesce(
-                case when c.card_brand = 'MAESTRO' then 'MASTER' else c.card_scheme end,
-                case
-                    when a.type in ('CreditCard', 'DebitCard') then a.brand else null
-                end
-            ) as card_scheme,
-            coalesce(
-                c.card_brand,
-                case
-                    when a.type in ('CreditCard', 'DebitCard') then a.brand else null
-                end
-            ) as card_brand,
-            coalesce(
-                c.card_type,
-                case
-                    when a.type in ('SEPA', 'DirectDebit')
-                    then 'SEPA'
-                    when a.type in ('CreditCard', 'DebitCard')
-                    then 'CC'
-                    when a.type in ('OnlineTransfer')
-                    then 'IDEAL'
-                    when a.type in ('None', 'ClickAndBuy')
-                    then 'INVOICE'
-                    else upper(a.type)
-                end
-            ) as card_type,
-            c.card_subtype,  -- subtype AS
-            c.card_prepaid,  -- isPrepaid AS
-            c.card_country,  -- country AS
-            c.card_bank,  -- bankname AS
-            c.card_blocked,  -- isblocked AS
+
             a.accountholder as card_accountholder,
             a.expiryyear as card_expiryyear,
             a.expirymonth as card_expirymonth,
@@ -263,7 +234,7 @@ with
             coalesce(
                 i.rate, case when a.currency in ('EUR', 'N/A') then 1 else 0 end
             ) as exchange_rate,
-            a.price + ifnull(a.initialfee, 0) as price,  -- add initialfee for old SEPA users
+            a.price  as price,  -- add initialfee for old SEPA users
             case
                 when a.currency <> 'N/A'
                 then a.currency
@@ -272,14 +243,14 @@ with
                 else br.currency_code
             end as currency,
             safe_divide(
-                a.price + ifnull(a.initialfee, 0),
+                a.price ,
                 coalesce(
                     i.rate, case when a.currency in ('EUR', 'N/A') then 1 else 0 end
                 )
             ) as price_eur,
             safe_divide(
                 safe_divide(
-                    a.price + ifnull(a.initialfee, 0),
+                    a.price ,
                     coalesce(
                         i.rate, case when a.currency in ('EUR', 'N/A') then 1 else 0 end
                     )
@@ -307,8 +278,8 @@ with
             g.initialdurationunit as fo_duration_unit,
             g.duration as rn_duration,
             g.durationunit as rn_duration_unit,
-            g.price + ifnull(a.initialfee, 0) as fo_price,
-            g.prolongationprice + ifnull(a.initialfee, 0) as rn_price,
+            g.price  as fo_price,
+            g.prolongationprice  as rn_price,
             case
                 when g.currency <> 'N/A' then g.currency else br.currency_code
             end as order_currency,
@@ -389,24 +360,21 @@ with
             br.brand as brand
 
         from ${ ref("stag_payment_transaction") } a
-        /*      left join
-            {{ ref("user_status") }} us_old on a.olduserstatus = us_old.user_status
+
         left join
-            {{ ref("user_status") }} us_new on a.newuserstatus = us_new.user_status  */
-        left join
-            {{ ref("dim_psp_acq") }} b
+            ${ ref("dim_psp_acq") } b
             on coalesce(a.cid_fin, a.paymentprovider_fin) = b.src_cid
             and a.paymentprovider_fin = b.src_paymentprovider
             and coalesce(a.acquirer_fin, a.paymentprovider_fin) = b.src_acquirer
-        left join {{ ref("dim_bin") }} c on a.paymentcardiin = c.bin_id
+        left join ${ ref("ods_bin") } c on a.paymentcardiin = SAFE_CAST(c.bin AS String)
         -- ON a.paymentcardiin = SAFE_CAST(c.bin AS INT64)
-        left join {{ ref("users") }} d on a.userid = d.user_id
-        left join {{ ref("upcase_tc") }} tr on d.upcase_tc = tr.upcase_tc
-        left join {{ ref("mkt_levels") }} dd on a.userid = dd.user_id
-        left join {{ ref("branch") }} br on d.branch = br.branch
+        left join ${ ref("users") } d on a.userid = d.user_id
+        left join ${ ref("v_upcase_tc") }tr on d.upcase_tc = tr.upcase_tc
+        left join ${ ref("mkt_levels") } dd on a.userid = dd.user_id
+        left join ${ ref("v_branch") } br on d.branch = br.branch
         left join
-            {{ ref("dim_returncodes") }} e  -- `ods_payment.ods_returncodes` e
-            on concat(
+            ${ ref("v_dim_returncodes") } e  -- `ods_payment.ods_returncodes` e
+             on concat(
                 coalesce(a.returncode, 'Unknown'),
                 coalesce(a.returnmessage, 'Unknown'),
                 case
@@ -428,10 +396,8 @@ with
                     then 'CB'
                     else 'DN'
                 end,
-                coalesce(
-                    case when a.psp = '0' then safe_cast(null as string) else a.psp end,
+
                     a.paymentprovider
-                )
             )
             = e.uniquekey
             and a.transactiontype in (
@@ -456,30 +422,30 @@ with
             )
 
         left join
-            {{ ref("stag_payment_refund") }} rf
+            ${ ref("stag_payment_refund") } rf
             on a.userid = rf.user_id
             and a.id = rf.id
 
         left join
-            {{ source("src_payment", "v_payment_user_products") }} g
+            ${ ref("v_payment_user_products") } g
             on a.productid = g.id
         left join
-            {{ ref("dim_cancellation_code") }} cl
+            ${ ref("v_dim_cancellation_code") } cl
             on g.cancellationcode = cl.cancellation_code
         left join
-            {{ ref("dim_fup") }} fup
+            ${ ref("dim_fup") } fup
             on g.initialduration = fup.initialduration
             and g.initialdurationunit = fup.initialdurationunit
             and g.duration = fup.duration
             and g.durationunit = fup.durationunit
         left join
-            {{ ref("country_vat_lookup") }} h
+            ${ ref("country_vat_lookup") } h
             on h.country_code = a.countrycode
             and h.valid_from <= date(a.date)
             and h.valid_to > date(a.date)
 
         left outer join
-            {{ ref("exchange_rates") }} i
+            ${ ref("v_exchange_rates") } i
             on date(a.date) = i.day
             and i.currency = a.currency
         left join
@@ -502,10 +468,10 @@ with
             and a.date >= j.event_ts
             and a.date < j.end_event_ts
         left join
-            {{ source("src_payment", "opas") }} o
+            ${ref("opas")} o
             on a.userid = o.userid
             and a.opa_id = o.id
-        left join {{ ref("opa") }} opa on o.opa_id = safe_cast(opa.opa_id as int64)
+        left join ${ ref("v_opa") } opa on o.opa_id = safe_cast(opa.opa_id as int64)
         left join
             cluauth cc
             on a.userid = cc.user_id

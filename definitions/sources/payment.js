@@ -75,3 +75,10 @@ declare({
   schema: "src_payment_stag",
   name: "v_userstatuschanges"
 });
+
+declare({
+  database: "cdate-prod",
+  schema: "src_payment",
+  name: "opas"
+});
+
