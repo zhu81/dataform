@@ -25,7 +25,8 @@ SELECT u.id user_id
                                       ,'fkfiv|1|lE4BofGS-dExg3U1N8W5HQ=='
                                       ,'fkfiv|1|i_xtBEHJ3sCT75acSi63Aw==')
                or u.id in( 64057739, 252329351,252329389,252329181)
-             THEN 1 else 0 END) test_user
+             THEN 1 else 0 END) test_user 
+  #, max(${test_user.test_user("u.emailDomain","u.registrationIP", "u.id" )}) test_user          
   , MAX(u.language) branch
   , MAX(u.gender) gender
   , STRING_AGG(SAFE_CAST( u.searchGender AS STRING) ORDER BY u.lastUpdated DESC LIMIT 1) search_gender
