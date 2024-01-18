@@ -1,6 +1,6 @@
 config { type: "table" ,
     schema: "ods_payment",
-    tags: ["daily"]}
+    tags: ["daily", "payment"]}
 
 with
 
